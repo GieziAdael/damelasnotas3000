@@ -1,0 +1,105 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Damelasnotas3000 - Partitura</title>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 16px;
+            background: #ffffff;
+            color: #202020;
+            font-family: Arial, sans-serif;
+        }
+
+        #status {
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        #score {
+            width: 100%;
+            overflow-x: auto;
+        }
+    </style>
+
+    <script src="opensheetmusicdisplay.min.js"></script>
+</head>
+<body>
+    <div id="status">Cargando partitura...</div>
+    <div id="score"></div>
+
+
+    <script>
+            console.log("OpenSheetMusicDisplay disponible:",
+                typeof window.opensheetmusicdisplay);
+            async function loadScore() {
+                const status = document.getElementById("status");
+                const score = document.getElementById("score");
+
+                if (!status || !score) {
+                    console.error("No se encontraron los elementos del visor.");
+                    return;
+                }
+
+                try {
+                    const fileName =
+                        new URLSearchParams(window.location.search).get("file")
+                        || "prueba.musicxml";
+
+                    const response = await fetch(fileName);
+
+                    if (!response.ok) {
+                        throw new Error(
+                            "No se pudo leer el XML. HTTP: " + response.status
+                        );
+                    }
+
+                    const musicXml = await response.text();
+
+                    console.log("URL del visor:", window.location.href);
+                    console.log("Archivo solicitado:", fileName);
+                    console.log("URL del XML:", response.url);
+                    console.log("Tamaño del XML recibido:", musicXml.length);
+                    console.log(
+                        "¿Contiene el título de ejemplo?",
+                        musicXml.includes("Prueba de piano")
+                    );
+
+                    if (!musicXml.trim()) {
+                        throw new Error("El archivo MusicXML está vacío.");
+                    }
+
+                    const osmd = new window.opensheetmusicdisplay.OpenSheetMusicDisplay(
+                        score,
+                        {
+                            autoResize: true,
+                            drawTitle: true
+                        }
+                    );
+
+                    await osmd.load(musicXml);
+                    osmd.render();
+
+                    status.textContent = "Partitura cargada correctamente.";
+                } catch (error) {
+                    const message = error instanceof Error
+                        ? error.message
+                        : String(error);
+
+                    status.textContent =
+                        "Error al cargar la partitura: " + message;
+
+                    console.error(error);
+                }
+            }
+
+            loadScore();
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,109 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Damelasnotas3000.MainPage"
+             Title="Damelasnotas3000">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="25"
+                             Spacing="20">
+            <Label
+                x:Name="DebugStatus"
+                Text="MainPage.xaml cargado"
+                FontSize="18"
+                TextColor="Red" />
+            
+            <Label Text="Damelasnotas3000"
+                   FontSize="28"
+                   FontAttributes="Bold"
+                   HorizontalOptions="Center" />
+
+            <Label Text="Convierte tu música en partituras"
+                   FontSize="16"
+                   HorizontalOptions="Center" />
+
+            <Label x:Name="RecordingStatus"
+                   Text="Listo para grabar"
+                   FontSize="16"
+                   HorizontalOptions="Center"
+                   HorizontalTextAlignment="Center" />
+
+            <Button x:Name="RecordButton"
+                    Text="● Grabar audio"
+                    Clicked="OnRecordClicked"
+                    IsEnabled="True"
+                    BackgroundColor="#D32F2F"
+                    TextColor="White"
+                    HeightRequest="60" />
+
+            <Button x:Name="StopButton"
+                    Text="■ Detener grabación"
+                    Clicked="OnStopClicked"
+                    IsEnabled="False"
+                    HeightRequest="55" />
+
+            <Button x:Name="DiscardButton"
+                    Text="✕ Descartar grabación"
+                    Clicked="OnDiscardClicked"
+                    IsEnabled="False"
+                    HeightRequest="55" />
+
+            <Label x:Name="AudioFileStatus"
+                   Text="No hay audio grabado"
+                   FontSize="13"
+                   HorizontalOptions="Center"
+                   HorizontalTextAlignment="Center" />
+
+            <Button x:Name="ConvertButton"
+                    Text="Convertir a MIDI"
+                    IsEnabled="False"
+                    Clicked="OnConvertClicked"
+                    HeightRequest="55" />
+
+            <Label Text="Partitura"
+                   FontSize="22"
+                   FontAttributes="Bold" />
+
+
+            <Label Text="Reproducción"
+       FontSize="22"
+       FontAttributes="Bold" />
+
+            <HorizontalStackLayout
+    Spacing="15"
+    HorizontalOptions="Center">
+
+                <Button
+        x:Name="PlayButton"
+        Text="▶ Play"
+        Clicked="OnPlayClicked"
+        IsEnabled="True"
+        BackgroundColor="#2E7D32"
+        TextColor="White"
+        WidthRequest="140"
+        HeightRequest="55" />
+
+                <Button
+        x:Name="StopPlaybackButton"
+        Text="■ Stop"
+        Clicked="OnStopPlaybackClicked"
+        IsEnabled="False"
+        BackgroundColor="#424242"
+        TextColor="White"
+        WidthRequest="140"
+        HeightRequest="55" />
+
+            </HorizontalStackLayout>
+
+
+            <WebView
+                x:Name="ScoreWebView"
+                HeightRequest="600"
+                HorizontalOptions="Fill"
+                VerticalOptions="Fill"
+                Navigated="ScoreWebView_Navigated" />
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

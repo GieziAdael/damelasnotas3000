@@ -1,0 +1,115 @@
+
+# ==========================================
+# .NET / MSBuild
+# ==========================================
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Archivos temporales
+*.tmp
+*.temp
+*.bak
+*.log
+
+# ==========================================
+# Visual Studio
+# ==========================================
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+
+# ==========================================
+# JetBrains Rider
+# ==========================================
+.idea/
+*.sln.iml
+
+# ==========================================
+# NuGet
+# ==========================================
+*.nupkg
+*.snupkg
+.nuget/packages/
+
+# ==========================================
+# MAUI / Android
+# ==========================================
+**/android/bin/
+**/android/obj/
+*.apk
+*.aab
+*.apks
+*.dex
+*.class
+*.keystore
+*.jks
+
+# ==========================================
+# iOS / Mac Catalyst
+# ==========================================
+**/ios/bin/
+**/ios/obj/
+**/maccatalyst/bin/
+**/maccatalyst/obj/
+*.ipa
+*.dSYM/
+*.xcarchive/
+
+# ==========================================
+# Windows
+# ==========================================
+**/windows/bin/
+**/windows/obj/
+*.appx
+*.msix
+*.appxbundle
+*.msixbundle
+
+# ==========================================
+# macOS
+# ==========================================
+.DS_Store
+
+# ==========================================
+# Configuración local y secretos
+# ==========================================
+appsettings.Local.json
+appsettings.Development.local.json
+.env
+.env.*
+!.env.example
+
+# Certificados y claves privadas
+*.pfx
+*.p12
+*.pem
+*.key
+
+# ==========================================
+# Archivos de publicación
+# ==========================================
+publish/
+artifacts/
+TestResults/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Dependencias instaladas de Magenta
+Magenta/Runtime/Lib/site-packages/
+
+# Checkpoints y modelos entrenados
+Magenta/Models/checkpoint/
