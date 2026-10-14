@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -30,7 +29,7 @@
     <script src="opensheetmusicdisplay.min.js"></script>
 </head>
 <body>
-    <div id="status">Cargando partitura...</div>
+    <div id="status"></div>
     <div id="score"></div>
 
 
@@ -85,7 +84,7 @@
                     await osmd.load(musicXml);
                     osmd.render();
 
-                    status.textContent = "Partitura cargada correctamente.";
+                    // status.textContent = "Partitura cargada correctamente.";
                 } catch (error) {
                     const message = error instanceof Error
                         ? error.message

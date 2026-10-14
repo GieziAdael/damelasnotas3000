@@ -7,11 +7,11 @@
     <ScrollView>
         <VerticalStackLayout Padding="25"
                              Spacing="20">
-            <Label
+            <!--<Label
                 x:Name="DebugStatus"
                 Text="MainPage.xaml cargado"
                 FontSize="18"
-                TextColor="Red" />
+                TextColor="Red" />-->
             
             <Label Text="Damelasnotas3000"
                    FontSize="28"
@@ -101,7 +101,7 @@
                 HeightRequest="600"
                 HorizontalOptions="Fill"
                 VerticalOptions="Fill"
-                Navigated="ScoreWebView_Navigated" />
+                Navigated="ScoreWebView_Navigated"/>
 
         </VerticalStackLayout>
     </ScrollView>

@@ -13,7 +13,7 @@ namespace Damelasnotas3000
         protected override Window CreateWindow(IActivationState? activationState)
         {
             var window = new Window(new AppShell());
-            window.Title = "PRUEBA DE COMPILACIÓN - 12345";
+            window.Title = "Damelasnotas3000";
             return window;
         }
 
