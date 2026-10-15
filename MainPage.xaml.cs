@@ -1,5 +1,6 @@
-﻿using Plugin.Maui.Audio;
-using Damelasnotas3000.Services;
+﻿using Damelasnotas3000.Services;
+using Damelasnotas3000.Services.MusicAnalysis;
+using Plugin.Maui.Audio;
 
 namespace Damelasnotas3000;
 
@@ -13,6 +14,7 @@ public partial class MainPage : ContentPage
     private readonly MagentaService _magentaService;
     private readonly MidiToMusicXmlService _musicXmlService;
     private readonly MidiPlaybackService _midiPlaybackService = new();
+    private readonly MusicAnalysisService _musicAnalysisService;
 
     public MainPage()
     {
@@ -22,6 +24,7 @@ public partial class MainPage : ContentPage
         _audioRecordingService = new AudioRecordingService(_recorder);
         _magentaService = new MagentaService();
         _musicXmlService = new MidiToMusicXmlService();
+        _musicAnalysisService = new MusicAnalysisService();
     }
 
     /// <summary>
@@ -178,17 +181,73 @@ public partial class MainPage : ContentPage
 
             Directory.CreateDirectory(outputDirectory);
 
+            string audioPath = _audioFilePath;
+
             string midiPath = await _magentaService.TranscribeAsync(
-                _audioFilePath,
+                audioPath,
                 outputDirectory);
 
             _midiFilePath = midiPath;
 
-            RecordingStatus.Text = "Convirtiendo MIDI a MusicXML...";
+            RecordingStatus.Text = "Analizando audio y MIDI...";
+
+            var analysis = await _musicAnalysisService.AnalyzeAsync(
+                audioPath,
+                midiPath,
+                outputDirectory);
+
+            string librosaTempo =
+                analysis.TempoBpm?.ToString("F1") ?? "sin dato";
+
+            string madmomTempo =
+                analysis.MadmomTempoBpm?.ToString("F1") ?? "sin dato";
+
+            string tempoCandidates =
+                analysis.TempoCandidatesBpm is { Count: > 0 }
+                    ? string.Join(
+                        ", ",
+                        analysis.TempoCandidatesBpm.Select(
+                            value => $"{value:F1} BPM"))
+                    : "sin candidatos";
+
+            string selectedMeter =
+                analysis.TimeSignatureNumerator is int numerator &&
+                analysis.TimeSignatureDenominator is int denominator
+                    ? $"{numerator}/{denominator}"
+                    : "sin confirmar";
+
+            string meterCandidates =
+                analysis.MeterCandidates is { Count: > 0 }
+                    ? string.Join(
+                        Environment.NewLine,
+                        analysis.MeterCandidates
+                            .OrderByDescending(candidate => candidate.Score)
+                            .Select(candidate =>
+                                $"  {candidate.Numerator}/{candidate.Denominator} " +
+                                $"(puntaje {candidate.Score:F3})"))
+                    : "  No hay candidatos";
+
+            string meterMargin =
+                analysis.MeterConfidence is double margin
+                    ? margin.ToString("F3")
+                    : "no disponible";
+
+            string analysisSummary =
+                $"Tempo Librosa: {librosaTempo} BPM" +
+                $"{Environment.NewLine}Tempo Madmom: {madmomTempo} BPM" +
+                $"{Environment.NewLine}Tempos candidatos: {tempoCandidates}" +
+                $"{Environment.NewLine}Compás seleccionado: {selectedMeter}" +
+                $"{Environment.NewLine}Margen de compás: {meterMargin}" +
+                $"{Environment.NewLine}Candidatos de compás:" +
+                $"{Environment.NewLine}{meterCandidates}";
+
+            RecordingStatus.Text =
+                $"Análisis completado.{Environment.NewLine}{analysisSummary}";
 
             string musicXmlPath = await _musicXmlService.ConvertAsync(
                 midiPath,
-                outputDirectory);
+                outputDirectory,
+                analysis);
 
             string scoreViewerDirectory = Path.Combine(
                 FileSystem.AppDataDirectory,
@@ -200,22 +259,27 @@ public partial class MainPage : ContentPage
                 scoreViewerDirectory,
                 "grabacion.musicxml");
 
-            File.Copy(musicXmlPath, viewerMusicXmlPath, true);
+            File.Copy(musicXmlPath, viewerMusicXmlPath, overwrite: true);
 
-            //This
             await LoadScoreViewerAsync("grabacion.musicxml");
 
-            RecordingStatus.Text = "Transcripción completada.";
+            RecordingStatus.Text =
+                $"Transcripción completada.{Environment.NewLine}{analysisSummary}";
 
             await DisplayAlertAsync(
                 "Conversión completada",
-                $"El archivo MIDI se generó correctamente:\n\n{midiPath}",
+                $"MIDI generado:{Environment.NewLine}{midiPath}" +
+                $"{Environment.NewLine}{Environment.NewLine}{analysisSummary}",
                 "Aceptar");
         }
         catch (Exception ex)
         {
             RecordingStatus.Text = "Error de conversión.";
-            await DisplayAlertAsync("Error", ex.Message, "Aceptar");
+
+            await DisplayAlertAsync(
+                "Error",
+                ex.Message,
+                "Aceptar");
         }
         finally
         {
@@ -236,7 +300,7 @@ public partial class MainPage : ContentPage
 #endif
     }
 
-    
+
     /// <summary>
     /// Copia recursivamente un directorio y su contenido a otra ubicación.
     /// </summary>
@@ -322,8 +386,8 @@ public partial class MainPage : ContentPage
 
             // Conserva los archivos existentes para evitar
             // copiarlos de nuevo en cada apertura.
-            if (File.Exists(destinationPath))
-                continue;
+            //if (File.Exists(destinationPath))
+            //    continue;
 
             string assetPath = $"ScoreViewer/{file}";
 
@@ -374,17 +438,25 @@ public partial class MainPage : ContentPage
 
             ////DebugStatus.Text =$"Archivos encontrados. MusicXML: {xmlSize} bytes. Cargando visor...";
 
-            string viewerUrl =
-                $"https://damelasnotas3000.example/index.html" +
-                $"?file={Uri.EscapeDataString(fileName)}" +
-                $"&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+#if WINDOWS
+            var nativeWebView =
+                (Microsoft.UI.Xaml.Controls.WebView2)ScoreWebView.Handler!.PlatformView;
 
-            ////DebugStatus.Text = $"Cargando: {fileName}\n{xmlSize} bytes";
+            await nativeWebView.EnsureCoreWebView2Async();
+
+            nativeWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "scoreviewer.example",
+                directory,
+                Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.DenyCors);
 
             ScoreWebView.Source = new UrlWebViewSource
             {
-                Url = viewerUrl
+                Url =
+                    $"https://scoreviewer.example/index.html" +
+                    $"?file={Uri.EscapeDataString(fileName)}" +
+                    $"&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"
             };
+#endif
 
         }
         catch (Exception ex)
