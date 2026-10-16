@@ -170,7 +170,16 @@ public class MusicAnalysisService
             LibrosaBeatTimes: result.LibrosaBeatTimes,
             MadmomBeatTimes: result.MadmomBeatTimes,
             BeatGridComparison: result.BeatGridComparison,
-            MeterDecisionReason: result.MeterDecisionReason);
+            MeterDecisionReason: result.MeterDecisionReason,
+            SelectedTempoBpm: result.SelectedTempoBpm,
+            TempoConfidence: result.TempoConfidence,
+            TempoDecisionReason: result.TempoDecisionReason,
+            TempoHypotheses: result.TempoHypotheses,
+            SelectedTempoUnit: result.SelectedTempoUnit,
+            SelectedPulseBpm: result.SelectedPulseBpm,
+            SelectedPulseUnit: result.SelectedPulseUnit,
+            SelectedGridPulsesPerBar:
+                result.SelectedGridPulsesPerBar);
 #else
         throw new PlatformNotSupportedException(
             "El análisis local está configurado para Windows.");
@@ -189,5 +198,13 @@ public class MusicAnalysisService
         List<double>? LibrosaBeatTimes,
         List<double>? MadmomBeatTimes,
         BeatGridComparison? BeatGridComparison,
-        string? MeterDecisionReason);
+        string? MeterDecisionReason,
+        double? SelectedTempoBpm,
+        double? TempoConfidence,
+        string? TempoDecisionReason,
+        List<TempoHypothesis>? TempoHypotheses,
+        string? SelectedTempoUnit,
+        double? SelectedPulseBpm,
+        string? SelectedPulseUnit,
+        int? SelectedGridPulsesPerBar);
 }

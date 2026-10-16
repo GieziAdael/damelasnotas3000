@@ -1,4 +1,6 @@
-﻿using Damelasnotas3000.Services;
+﻿using Damelasnotas3000.Models;
+using Damelasnotas3000.Services;
+using Damelasnotas3000.Services.MidiCleanup;
 using Damelasnotas3000.Services.MusicAnalysis;
 using Plugin.Maui.Audio;
 
@@ -15,6 +17,7 @@ public partial class MainPage : ContentPage
     private readonly MidiToMusicXmlService _musicXmlService;
     private readonly MidiPlaybackService _midiPlaybackService = new();
     private readonly MusicAnalysisService _musicAnalysisService;
+    private readonly MidiCleanupService _midiCleanupService;
 
     public MainPage()
     {
@@ -25,6 +28,7 @@ public partial class MainPage : ContentPage
         _magentaService = new MagentaService();
         _musicXmlService = new MidiToMusicXmlService();
         _musicAnalysisService = new MusicAnalysisService();
+        _midiCleanupService = new MidiCleanupService();
     }
 
     /// <summary>
@@ -53,7 +57,7 @@ public partial class MainPage : ContentPage
             RecordingStatus.Text = "Grabando audio...";
             RecordButton.IsEnabled = false;
             StopButton.IsEnabled = true;
-            DiscardButton.IsEnabled = true;
+            DiscardButton.IsEnabled = false;
             ConvertButton.IsEnabled = false;
             AudioFileStatus.Text = "Grabación en curso";
         }
@@ -196,6 +200,22 @@ public partial class MainPage : ContentPage
                 midiPath,
                 outputDirectory);
 
+            RecordingStatus.Text =
+                "Evaluando las notas MIDI contra el audio...";
+
+            MidiCleanupResult cleanupResult =
+                await _midiCleanupService.AnalyzeAsync(
+                    audioPath,
+                    midiPath,
+                    outputDirectory);
+
+            string cleanupSummary =
+                $"Diagnóstico MIDI: {cleanupResult.TotalNotes} notas; " +
+                $"{cleanupResult.SupportedCount} con evidencia, " +
+                $"{cleanupResult.ReviewCount} para revisar, " +
+                $"{cleanupResult.InconclusiveCount} inconclusas." +
+                $"{Environment.NewLine}Reporte: {cleanupResult.ReportPath}";
+
             string librosaTempo =
                 analysis.TempoBpm?.ToString("F1") ?? "sin dato";
 
@@ -209,6 +229,45 @@ public partial class MainPage : ContentPage
                         analysis.TempoCandidatesBpm.Select(
                             value => $"{value:F1} BPM"))
                     : "sin candidatos";
+
+            string TempoUnitLabel(string? unit) => unit switch
+            {
+                "eighth" => "corchea",
+                "quarter" => "negra",
+                "dotted_quarter" => "negra con puntillo",
+                "half" => "blanca",
+                _ => "unidad no identificada"
+            };
+            string selectedTempo =
+                analysis.SelectedTempoBpm is double selectedBpm
+                    ? $"{selectedBpm:F1} BPM " +
+                      $"({TempoUnitLabel(analysis.SelectedTempoUnit)})"
+                    : "ambiguo; revisar hipótesis";
+
+            string tempoHypotheses =
+                analysis.TempoHypotheses is { Count: > 0 }
+                    ? string.Join(
+                        Environment.NewLine,
+                        analysis.TempoHypotheses
+                            .Take(6)
+                            .Select(hypothesis =>
+                            {
+                                string pulseDescription =
+                                    hypothesis.GridPulseBpm is double pulseBpm
+                                        ? $"; cuadrícula {pulseBpm:F1} BPM " +
+                                          $"({TempoUnitLabel(hypothesis.GridPulseUnit)}), " +
+                                          $"{hypothesis.GridPulsesPerBar} pulsos/compás"
+                                        : "";
+
+                                return
+                                    $"  {hypothesis.TempoBpm:F1} BPM " +
+                                    $"({TempoUnitLabel(hypothesis.TempoUnit)}), " +
+                                    $"{hypothesis.Numerator}/{hypothesis.Denominator}, " +
+                                    $"puntaje {hypothesis.TotalScore:F3}" +
+                                    pulseDescription +
+                                    (hypothesis.IsSelected ? " (seleccionada)" : "");
+                            }))
+                    : "  No hay hipótesis evaluables";
 
             string selectedMeter =
                 analysis.TimeSignatureNumerator is int numerator &&
@@ -239,7 +298,12 @@ public partial class MainPage : ContentPage
                 $"{Environment.NewLine}Compás seleccionado: {selectedMeter}" +
                 $"{Environment.NewLine}Margen de compás: {meterMargin}" +
                 $"{Environment.NewLine}Candidatos de compás:" +
-                $"{Environment.NewLine}{meterCandidates}";
+                $"{Environment.NewLine}{meterCandidates}" +
+                $"{Environment.NewLine}{Environment.NewLine}{cleanupSummary}" +
+                $"{Environment.NewLine}Tempo seleccionado: {selectedTempo}" +
+                $"{Environment.NewLine}Decisión de tempo: {analysis.TempoDecisionReason}" +
+                $"{Environment.NewLine}Hipótesis tempo/compás:" +
+                $"{Environment.NewLine}{tempoHypotheses}";
 
             RecordingStatus.Text =
                 $"Análisis completado.{Environment.NewLine}{analysisSummary}";

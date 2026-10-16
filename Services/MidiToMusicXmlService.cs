@@ -88,8 +88,7 @@ public class MidiToMusicXmlService
         }
 
         // Usa el tempo de Librosa si está disponible; si no, el de Madmom.
-        double? tempoBpm =
-            analysis.TempoBpm ?? analysis.MadmomTempoBpm;
+        double? tempoBpm = analysis.SelectedTempoBpm;
 
         if (tempoBpm.HasValue &&
             double.IsFinite(tempoBpm.Value) &&
@@ -98,6 +97,8 @@ public class MidiToMusicXmlService
             startInfo.Environment["TEMPO_BPM"] =
                 tempoBpm.Value.ToString(
                     CultureInfo.InvariantCulture);
+            startInfo.Environment["TEMPO_UNIT"] =
+                analysis.SelectedTempoUnit ?? "quarter";
         }
 
         // Se ejecuta el archivo .py directamente; no se usa "-c".

@@ -84,6 +84,7 @@
 
   <ItemGroup>
     <Folder Include="Resources\Raw\MusicAnalysis\" />
+    <Folder Include="Resources\Raw\MidiCleanup\" />
     <Folder Include="Resources\Raw\ScoreViewer\" />
   </ItemGroup>
 

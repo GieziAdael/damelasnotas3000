@@ -1,6 +1,7 @@
+import copy
 import os
 
-from music21 import converter, meter, tempo
+from music21 import converter, duration, meter, tempo
 
 
 MIDI_INPUT = os.environ["MIDI_INPUT"]
@@ -67,23 +68,62 @@ def apply_tempo(score):
         print("TEMPO APLICADO: ninguno; valor no válido")
         return
 
+    tempo_unit = os.environ.get(
+        "TEMPO_UNIT",
+        "quarter",
+    ).strip().lower()
+
+    unit_quarter_lengths = {
+        "eighth": 0.5,
+        "quarter": 1.0,
+        "dotted_quarter": 1.5,
+        "half": 2.0,
+    }
+
+    if tempo_unit not in unit_quarter_lengths:
+        raise ValueError(
+            f"Unidad de tempo no soportada: {tempo_unit}"
+        )
+
+    referent = duration.Duration(
+        quarterLength=unit_quarter_lengths[tempo_unit]
+    )
+
+    metronome_mark = tempo.MetronomeMark(
+        number=bpm,
+        referent=referent,
+    )
+
     parts = list(score.parts)
 
     if not parts:
-        remove_elements_from_stream(score, tempo.MetronomeMark)
-        score.insert(
-            0,
-            tempo.MetronomeMark(number=bpm),
+        remove_elements_from_stream(
+            score,
+            tempo.MetronomeMark,
         )
+        score.insert(0, metronome_mark)
     else:
         for part in parts:
-            remove_elements_from_stream(part, tempo.MetronomeMark)
+            remove_elements_from_stream(
+                part,
+                tempo.MetronomeMark,
+            )
             part.insert(
                 0,
-                tempo.MetronomeMark(number=bpm),
+                tempo.MetronomeMark(
+                    number=bpm,
+                    referent=duration.Duration(
+                        quarterLength=
+                            unit_quarter_lengths[tempo_unit]
+                    ),
+                ),
             )
 
-    print("TEMPO APLICADO:", bpm)
+    print(
+        "TEMPO APLICADO:",
+        bpm,
+        tempo_unit,
+    )
 
 
 def main():
@@ -100,10 +140,25 @@ def main():
     apply_time_signature(score)
     apply_tempo(score)
 
-    score.write(
-        "musicxml",
-        fp=XML_OUTPUT,
-    )
+    export_score = copy.deepcopy(score)
+
+    try:
+        export_score.write(
+            "musicxml",
+            fp=XML_OUTPUT,
+        )
+    except KeyError as exc:
+        print(
+            "AVISO: music21 falló al reorganizar los tuplets; "
+            "se intentará exportar sin makeNotation.",
+            str(exc),
+        )
+
+        score.write(
+            "musicxml",
+            fp=XML_OUTPUT,
+            makeNotation=False,
+        )
 
     print("XML_OUTPUT:", XML_OUTPUT)
 

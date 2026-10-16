@@ -18,5 +18,13 @@ namespace Damelasnotas3000.Models
         IReadOnlyList<double>? LibrosaBeatTimes = null,
         IReadOnlyList<double>? MadmomBeatTimes = null,
         BeatGridComparison? BeatGridComparison = null,
-        string? MeterDecisionReason = null);
+        string? MeterDecisionReason = null,
+        double? SelectedTempoBpm = null,
+        double? TempoConfidence = null,
+        string? TempoDecisionReason = null,
+        IReadOnlyList<TempoHypothesis>? TempoHypotheses = null,
+        string? SelectedTempoUnit = null,
+        double? SelectedPulseBpm = null,
+        string? SelectedPulseUnit = null,
+        int? SelectedGridPulsesPerBar = null);
 }
