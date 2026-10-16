@@ -79,7 +79,7 @@ public class MusicAnalysisService
         startInfo.Environment["AUDIO_INPUT"] = analysisWavPath;
         startInfo.Environment["MIDI_INPUT"] = midiPath;
 
-        // Al pasar la ruta del archivo, no se agrega "-c".
+        // Se ejecuta el archivo Python directamente, no con "-c".
         startInfo.ArgumentList.Add(scriptPath);
 
         using var process = new Process
@@ -141,17 +141,36 @@ public class MusicAnalysisService
                 "No se pudo leer el resultado del análisis.");
         }
 
+        Debug.WriteLine(
+            $"Pulsos Librosa: {result.LibrosaBeatTimes?.Count ?? 0}");
+
+        Debug.WriteLine(
+            $"Pulsos Madmom: {result.MadmomBeatTimes?.Count ?? 0}");
+
+        Debug.WriteLine(
+            $"Relación de cuadrículas: " +
+            $"{result.BeatGridComparison?.RateRelation}");
+
+        Debug.WriteLine(
+            $"Motivo del compás: {result.MeterDecisionReason}");
+
         return new MusicAnalysisResult(
-            result.TempoBpm,
-            result.BeatCount,
-            result.TimeSignatureNumerator,
-            result.TimeSignatureDenominator,
-            null,
-            null,
-            result.MadmomTempoBpm,
-            result.TempoCandidatesBpm,
-            result.MeterCandidates,
-            result.MeterConfidence);
+            TempoBpm: result.TempoBpm,
+            BeatCount: result.BeatCount,
+            TimeSignatureNumerator:
+                result.TimeSignatureNumerator,
+            TimeSignatureDenominator:
+                result.TimeSignatureDenominator,
+            Key: null,
+            Confidence: null,
+            MadmomTempoBpm: result.MadmomTempoBpm,
+            TempoCandidatesBpm: result.TempoCandidatesBpm,
+            MeterCandidates: result.MeterCandidates,
+            MeterConfidence: result.MeterConfidence,
+            LibrosaBeatTimes: result.LibrosaBeatTimes,
+            MadmomBeatTimes: result.MadmomBeatTimes,
+            BeatGridComparison: result.BeatGridComparison,
+            MeterDecisionReason: result.MeterDecisionReason);
 #else
         throw new PlatformNotSupportedException(
             "El análisis local está configurado para Windows.");
@@ -166,5 +185,9 @@ public class MusicAnalysisService
         int? TimeSignatureNumerator,
         int? TimeSignatureDenominator,
         List<MeterCandidate>? MeterCandidates,
-        double? MeterConfidence);
+        double? MeterConfidence,
+        List<double>? LibrosaBeatTimes,
+        List<double>? MadmomBeatTimes,
+        BeatGridComparison? BeatGridComparison,
+        string? MeterDecisionReason);
 }
