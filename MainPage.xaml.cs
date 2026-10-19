@@ -340,6 +340,7 @@ public partial class MainPage : ContentPage
                 $"{Environment.NewLine}Tempos candidatos: {tempoCandidates}" +
                 $"{Environment.NewLine}Compás seleccionado: {selectedMeter}" +
                 $"{Environment.NewLine}Margen de compás: {meterMargin}" +
+                $"{Environment.NewLine}Decisión de compás: {analysis.MeterDecisionReason}" +
                 $"{Environment.NewLine}Candidatos de compás:" +
                 $"{Environment.NewLine}{meterCandidates}" +
                 $"{Environment.NewLine}{Environment.NewLine}{cleanupSummary}" +

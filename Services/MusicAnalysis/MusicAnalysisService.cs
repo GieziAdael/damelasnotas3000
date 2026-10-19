@@ -192,7 +192,11 @@ public class MusicAnalysisService
             SelectedPulseBpm: result.SelectedPulseBpm,
             SelectedPulseUnit: result.SelectedPulseUnit,
             SelectedGridPulsesPerBar:
-                result.SelectedGridPulsesPerBar);
+                result.SelectedGridPulsesPerBar,
+            EstimatedTempoBpm: result.EstimatedTempoBpm,
+            TempoEstimateSource: result.TempoEstimateSource,
+            TempoEstimatorAgreement:
+                result.TempoEstimatorAgreement);
 #else
         throw new PlatformNotSupportedException(
             "El análisis local está configurado para Windows.");

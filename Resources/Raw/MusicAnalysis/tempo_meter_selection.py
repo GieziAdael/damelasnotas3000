@@ -12,6 +12,8 @@ from midi_diagnostics import evaluate_midi_alignment
 
 MIN_TEMPO_HYPOTHESIS_MARGIN = 0.04
 MIN_JOINT_METER_MARGIN = 0.04
+MIN_NOTATED_TEMPO_BPM = 30.0
+MAX_NOTATED_TEMPO_BPM = 300.0
 
 def autocorrelation_score_for_tempo(
     onset_envelope,
@@ -146,8 +148,8 @@ def canonical_tempo_from_grid_hypothesis(
     """
     Convierte la velocidad de la cuadrícula a BPM notados.
 
-    Para 6/8 usa como unidad convencional la negra con puntillo.
-    Para los compases /4 usa la negra.
+    Para 6/8, 9/8 y 12/8 usa la negra con puntillo.
+    Para otros compases /8 usa la corchea; para /4, la negra.
     """
     if (
         grid_pulse_bpm is None
@@ -183,9 +185,12 @@ def canonical_tempo_from_grid_hypothesis(
     ):
         return None
 
-    if (numerator, denominator) == (6, 8):
+    if denominator == 8 and numerator >= 6 and numerator % 3 == 0:
         tempo_unit = "dotted_quarter"
         tempo_unit_quarter_length = 1.5
+    elif denominator == 8:
+        tempo_unit = "eighth"
+        tempo_unit_quarter_length = 0.5
     else:
         tempo_unit = "quarter"
         tempo_unit_quarter_length = 1.0
@@ -210,6 +215,9 @@ def canonical_tempo_from_grid_hypothesis(
     if (
         not np.isfinite(canonical_tempo_bpm)
         or canonical_tempo_bpm <= 0
+        or not MIN_NOTATED_TEMPO_BPM
+            <= canonical_tempo_bpm
+            <= MAX_NOTATED_TEMPO_BPM
     ):
         return None
 

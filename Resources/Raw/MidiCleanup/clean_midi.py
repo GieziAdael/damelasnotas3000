@@ -145,6 +145,24 @@ def build_pitch_salience(magnitude, sample_rate, n_fft):
     return salience
 
 
+def build_pitch_onset_salience(magnitude, sample_rate, n_fft):
+    """Separa ataques nuevos del nivel sostenido de cada armónico."""
+    positive_flux = np.maximum(
+        np.diff(
+            magnitude,
+            axis=1,
+            prepend=magnitude[:, :1],
+        ),
+        0.0,
+    )
+
+    return build_pitch_salience(
+        positive_flux,
+        sample_rate,
+        n_fft,
+    )
+
+
 def median_or_none(values):
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]
@@ -567,12 +585,14 @@ def main():
         center=True
     )
 
-    onset_scores = build_pitch_salience(
-        np.abs(onset_spectrum).astype(np.float32),
+    onset_magnitude = np.abs(onset_spectrum).astype(np.float32)
+    onset_scores = build_pitch_onset_salience(
+        onset_magnitude,
         sample_rate,
         ONSET_N_FFT
     )
 
+    del onset_magnitude
     del onset_spectrum
 
     assessments = []

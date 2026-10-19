@@ -660,15 +660,24 @@ METER_PULSE_VARIANTS = {
             "beatsPerBar": 2,
             "beatUnit": "quarter",
             "beatUnitQuarterLength": 1.0,
-            "accentPattern": [1.0, 0.18],
+            "accentPattern": [1.0, 0.22],
             "subdivisionsPerPulse": 2,
-            "subdivisionAccentPattern": [1.0, 0.08, 0.45, 0.08],
+            "subdivisionAccentPattern": [1.0, 0.08, 0.28, 0.08],
         },
         {
             "beatsPerBar": 4,
             "beatUnit": "eighth",
             "beatUnitQuarterLength": 0.5,
-            "accentPattern": [1.0, 0.10, 0.45, 0.10],
+            "accentPattern": [1.0, 0.08, 0.28, 0.08],
+            "subdivisionsPerPulse": 1,
+        },
+    ],
+    (3, 8): [
+        {
+            "beatsPerBar": 3,
+            "beatUnit": "eighth",
+            "beatUnitQuarterLength": 0.5,
+            "accentPattern": [1.0, 0.16, 0.34],
             "subdivisionsPerPulse": 1,
         },
     ],
@@ -677,17 +686,17 @@ METER_PULSE_VARIANTS = {
             "beatsPerBar": 3,
             "beatUnit": "quarter",
             "beatUnitQuarterLength": 1.0,
-            "accentPattern": [1.0, 0.18, 0.28],
+            "accentPattern": [1.0, 0.18, 0.34],
             "subdivisionsPerPulse": 2,
             "subdivisionAccentPattern": [
-                1.0, 0.08, 0.28, 0.08, 0.18, 0.08,
+                1.0, 0.08, 0.34, 0.08, 0.18, 0.08,
             ],
         },
         {
             "beatsPerBar": 6,
             "beatUnit": "eighth",
             "beatUnitQuarterLength": 0.5,
-            "accentPattern": [1.0, 0.08, 0.28, 0.08, 0.18, 0.08],
+            "accentPattern": [1.0, 0.08, 0.34, 0.08, 0.18, 0.08],
             "subdivisionsPerPulse": 1,
         },
     ],
@@ -724,6 +733,51 @@ METER_PULSE_VARIANTS = {
             "subdivisionsPerPulse": 1,
         },
     ],
+    (5, 4): [
+        {
+            "beatsPerBar": 5,
+            "beatUnit": "quarter",
+            "beatUnitQuarterLength": 1.0,
+            "accentPattern": [1.0, 0.16, 0.48, 0.16, 0.30],
+            "subdivisionsPerPulse": 2,
+            "subdivisionAccentPattern": [
+                1.0, 0.08, 0.16, 0.08, 0.48, 0.08,
+                0.16, 0.08, 0.30, 0.08,
+            ],
+        },
+        {
+            "beatsPerBar": 10,
+            "beatUnit": "eighth",
+            "beatUnitQuarterLength": 0.5,
+            "accentPattern": [
+                1.0, 0.08, 0.16, 0.08, 0.48, 0.08,
+                0.16, 0.08, 0.30, 0.08,
+            ],
+            "subdivisionsPerPulse": 1,
+        },
+    ],
+    (5, 8): [
+        {
+            "beatsPerBar": 5,
+            "beatUnit": "eighth",
+            "beatUnitQuarterLength": 0.5,
+            "accentPattern": [1.0, 0.16, 0.48, 0.16, 0.30],
+            "subdivisionsPerPulse": 1,
+        },
+    ],
+    (6, 4): [
+        {
+            "beatsPerBar": 6,
+            "beatUnit": "quarter",
+            "beatUnitQuarterLength": 1.0,
+            "accentPattern": [1.0, 0.16, 0.42, 0.18, 0.54, 0.18],
+            "subdivisionsPerPulse": 2,
+            "subdivisionAccentPattern": [
+                1.0, 0.08, 0.16, 0.08, 0.42, 0.08,
+                0.18, 0.08, 0.54, 0.08, 0.18, 0.08,
+            ],
+        },
+    ],
     (6, 8): [
         {
             "beatsPerBar": 2,
@@ -741,6 +795,74 @@ METER_PULSE_VARIANTS = {
             "beatUnitQuarterLength": 0.5,
             "accentPattern": [
                 1.0, 0.08, 0.22, 0.58, 0.08, 0.22,
+            ],
+            "subdivisionsPerPulse": 1,
+        },
+    ],
+    (7, 4): [
+        {
+            "beatsPerBar": 7,
+            "beatUnit": "quarter",
+            "beatUnitQuarterLength": 1.0,
+            "accentPattern": [1.0, 0.16, 0.48, 0.16, 0.42, 0.16, 0.28],
+            "subdivisionsPerPulse": 2,
+            "subdivisionAccentPattern": [
+                1.0, 0.08, 0.16, 0.08, 0.48, 0.08, 0.16, 0.08,
+                0.42, 0.08, 0.16, 0.08, 0.28, 0.08,
+            ],
+        },
+    ],
+    (7, 8): [
+        {
+            "beatsPerBar": 7,
+            "beatUnit": "eighth",
+            "beatUnitQuarterLength": 0.5,
+            "accentPattern": [1.0, 0.16, 0.48, 0.16, 0.42, 0.16, 0.28],
+            "subdivisionsPerPulse": 1,
+        },
+    ],
+    (9, 8): [
+        {
+            "beatsPerBar": 3,
+            "beatUnit": "dotted_quarter",
+            "beatUnitQuarterLength": 1.5,
+            "accentPattern": [1.0, 0.50, 0.28],
+            "subdivisionsPerPulse": 3,
+            "subdivisionAccentPattern": [
+                1.0, 0.08, 0.22, 0.50, 0.08, 0.22,
+                0.28, 0.08, 0.22,
+            ],
+        },
+        {
+            "beatsPerBar": 9,
+            "beatUnit": "eighth",
+            "beatUnitQuarterLength": 0.5,
+            "accentPattern": [
+                1.0, 0.08, 0.22, 0.50, 0.08, 0.22,
+                0.28, 0.08, 0.22,
+            ],
+            "subdivisionsPerPulse": 1,
+        },
+    ],
+    (12, 8): [
+        {
+            "beatsPerBar": 4,
+            "beatUnit": "dotted_quarter",
+            "beatUnitQuarterLength": 1.5,
+            "accentPattern": [1.0, 0.45, 0.22, 0.55],
+            "subdivisionsPerPulse": 3,
+            "subdivisionAccentPattern": [
+                1.0, 0.08, 0.22, 0.45, 0.08, 0.22,
+                0.22, 0.08, 0.22, 0.55, 0.08, 0.22,
+            ],
+        },
+        {
+            "beatsPerBar": 12,
+            "beatUnit": "eighth",
+            "beatUnitQuarterLength": 0.5,
+            "accentPattern": [
+                1.0, 0.08, 0.22, 0.45, 0.08, 0.22,
+                0.22, 0.08, 0.22, 0.55, 0.08, 0.22,
             ],
             "subdivisionsPerPulse": 1,
         },
