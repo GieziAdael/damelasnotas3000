@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Globalization;
 using Damelasnotas3000.Models;
 
@@ -9,7 +9,11 @@ public class MidiToMusicXmlService
     public async Task<string> ConvertAsync(
         string midiFilePath,
         string outputDirectory,
-        MusicAnalysisResult analysis)
+        MusicAnalysisResult analysis,
+        int? meterNumeratorOverride = null,
+        int? meterDenominatorOverride = null,
+        double? tempoBpmOverride = null,
+        string? tempoUnitOverride = null)
     {
 #if WINDOWS
         if (string.IsNullOrWhiteSpace(midiFilePath) ||
@@ -18,6 +22,41 @@ public class MidiToMusicXmlService
             throw new FileNotFoundException(
                 "No se encontró el archivo MIDI.",
                 midiFilePath);
+        }
+
+        if (analysis is null)
+            throw new ArgumentNullException(nameof(analysis));
+
+        if (meterNumeratorOverride.HasValue !=
+            meterDenominatorOverride.HasValue)
+        {
+            throw new ArgumentException(
+                "Debes indicar numerador y denominador del compás.");
+        }
+
+        if (meterNumeratorOverride is int numeratorOverride &&
+            (numeratorOverride < 1 || numeratorOverride > 32))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(meterNumeratorOverride),
+                "El numerador del compás debe estar entre 1 y 32.");
+        }
+
+        if (meterDenominatorOverride is int denominatorOverride &&
+            (denominatorOverride < 1 || denominatorOverride > 32 ||
+             (denominatorOverride & (denominatorOverride - 1)) != 0))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(meterDenominatorOverride),
+                "El denominador del compás debe ser una potencia de 2.");
+        }
+
+        if (tempoBpmOverride is double manualTempo &&
+            (!double.IsFinite(manualTempo) || manualTempo <= 0))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(tempoBpmOverride),
+                "El tempo debe ser un número mayor que cero.");
         }
 
         Directory.CreateDirectory(outputDirectory);
@@ -69,51 +108,46 @@ public class MidiToMusicXmlService
 
         startInfo.Environment["PYTHONPATH"] =
             converterPackagesDirectory;
+        startInfo.Environment["MIDI_INPUT"] = midiFilePath;
+        startInfo.Environment["XML_OUTPUT"] = musicXmlPath;
 
-        startInfo.Environment["MIDI_INPUT"] =
-            midiFilePath;
+        int? meterNumerator =
+            meterNumeratorOverride ?? analysis.TimeSignatureNumerator;
+        int? meterDenominator =
+            meterDenominatorOverride ?? analysis.TimeSignatureDenominator;
 
-        startInfo.Environment["XML_OUTPUT"] =
-            musicXmlPath;
-
-        // Solo se envía el compás cuando el análisis lo seleccionó.
-        if (analysis.TimeSignatureNumerator is int numerator &&
-            analysis.TimeSignatureDenominator is int denominator)
+        if (meterNumerator is int numerator &&
+            meterDenominator is int denominator)
         {
             startInfo.Environment["METER_NUMERATOR"] =
                 numerator.ToString(CultureInfo.InvariantCulture);
-
             startInfo.Environment["METER_DENOMINATOR"] =
                 denominator.ToString(CultureInfo.InvariantCulture);
         }
 
-        // Usa el tempo de Librosa si está disponible; si no, el de Madmom.
-        double? tempoBpm = analysis.SelectedTempoBpm;
-
-        if (tempoBpm.HasValue &&
-            double.IsFinite(tempoBpm.Value) &&
-            tempoBpm.Value > 0)
+        double? tempoBpm = tempoBpmOverride ?? analysis.SelectedTempoBpm;
+        if (tempoBpm is double bpm && double.IsFinite(bpm) && bpm > 0)
         {
             startInfo.Environment["TEMPO_BPM"] =
-                tempoBpm.Value.ToString(
-                    CultureInfo.InvariantCulture);
-            startInfo.Environment["TEMPO_UNIT"] =
-                analysis.SelectedTempoUnit ?? "quarter";
+                bpm.ToString("0.###", CultureInfo.InvariantCulture);
+
+            // Si se introduce un BPM manual sin unidad, se interpreta como
+            // negra, que es la convención habitual de las indicaciones BPM.
+            string tempoUnit = tempoUnitOverride ??
+                (tempoBpmOverride.HasValue
+                    ? "quarter"
+                    : analysis.SelectedTempoUnit ?? "quarter");
+
+            startInfo.Environment["TEMPO_UNIT"] = tempoUnit;
         }
 
-        // Se ejecuta el archivo .py directamente; no se usa "-c".
         startInfo.ArgumentList.Add(scriptPath);
 
-        using var process = new Process
-        {
-            StartInfo = startInfo
-        };
-
+        using var process = new Process { StartInfo = startInfo };
         process.Start();
 
         Task<string> stdoutTask =
             process.StandardOutput.ReadToEndAsync();
-
         Task<string> stderrTask =
             process.StandardError.ReadToEndAsync();
 
@@ -125,8 +159,7 @@ public class MidiToMusicXmlService
         Debug.WriteLine(stdout);
         Debug.WriteLine(stderr);
 
-        if (process.ExitCode != 0 ||
-            !File.Exists(musicXmlPath))
+        if (process.ExitCode != 0 || !File.Exists(musicXmlPath))
         {
             throw new InvalidOperationException(
                 "No se pudo convertir el MIDI a MusicXML." +

@@ -1,4 +1,5 @@
-﻿using Damelasnotas3000.Models;
+using System.Globalization;
+using Damelasnotas3000.Models;
 using Damelasnotas3000.Services;
 using Damelasnotas3000.Services.MidiCleanup;
 using Damelasnotas3000.Services.MusicAnalysis;
@@ -29,6 +30,63 @@ public partial class MainPage : ContentPage
         _musicXmlService = new MidiToMusicXmlService();
         _musicAnalysisService = new MusicAnalysisService();
         _midiCleanupService = new MidiCleanupService();
+    }
+
+    private (int? Numerator, int? Denominator) ReadMeterOverride()
+    {
+        string? value = MeterOverridePicker.SelectedItem?.ToString();
+        if (string.IsNullOrWhiteSpace(value) || value == "Automático")
+            return (null, null);
+
+        string[] parts = value.Split('/');
+        if (parts.Length != 2 ||
+            !int.TryParse(parts[0], NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out int numerator) ||
+            !int.TryParse(parts[1], NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out int denominator))
+        {
+            throw new FormatException("El compás seleccionado no es válido.");
+        }
+
+        return (numerator, denominator);
+    }
+
+    private double? ReadTempoOverride()
+    {
+        string? value = TempoOverrideEntry.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        bool parsed = double.TryParse(
+            value,
+            NumberStyles.Float,
+            CultureInfo.CurrentCulture,
+            out double tempoBpm);
+        if (!parsed)
+        {
+            parsed = double.TryParse(
+                value,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out tempoBpm);
+        }
+
+        if (!parsed || !double.IsFinite(tempoBpm) || tempoBpm <= 0)
+            throw new FormatException("Escribe un tempo válido mayor que cero.");
+
+        return tempoBpm;
+    }
+
+    private string? ReadTempoUnitOverride()
+    {
+        return TempoUnitPicker.SelectedItem?.ToString() switch
+        {
+            "Negra" => "quarter",
+            "Corchea" => "eighth",
+            "Negra con puntillo" => "dotted_quarter",
+            "Blanca" => "half",
+            _ => null
+        };
     }
 
     /// <summary>
@@ -176,6 +234,12 @@ public partial class MainPage : ContentPage
 
         try
         {
+            // Lee los ajustes antes de iniciar las tareas de análisis y limpieza.
+            var (meterNumeratorOverride, meterDenominatorOverride) =
+                ReadMeterOverride();
+            double? tempoOverride = ReadTempoOverride();
+            string? tempoUnitOverride = ReadTempoUnitOverride();
+
             RecordingStatus.Text = "Transcribiendo con Magenta...";
 
             string outputDirectory = Path.Combine(
@@ -348,7 +412,17 @@ public partial class MainPage : ContentPage
                 $"{Environment.NewLine}Decisión de tempo: {analysis.TempoDecisionReason}" +
                 $"{Environment.NewLine}Hipótesis tempo/compás:" +
                 $"{Environment.NewLine}{tempoHypotheses}"+
-                $"{Environment.NewLine}Tempo numérico independiente: {independentTempo}" ;
+                $"{Environment.NewLine}Tempo numérico independiente: {independentTempo}" +
+                $"{Environment.NewLine}Compás usado en MusicXML: " +
+                (meterNumeratorOverride is int manualNumerator &&
+                 meterDenominatorOverride is int manualDenominator
+                    ? $"{manualNumerator}/{manualDenominator} (manual)"
+                    : $"{selectedMeter} (análisis) / predeterminado si no se confirmó") +
+                $"{Environment.NewLine}Tempo usado en MusicXML: " +
+                (tempoOverride is double manualTempo
+                    ? $"{manualTempo:F1} BPM (manual, " +
+                      $"{TempoUnitLabel(tempoUnitOverride ?? "quarter")})"
+                    : $"{selectedTempo} (análisis)");
 
             RecordingStatus.Text =
                 $"Análisis completado.{Environment.NewLine}{analysisSummary}";
@@ -357,7 +431,11 @@ public partial class MainPage : ContentPage
                 await _musicXmlService.ConvertAsync(
                     cleanedMidiPath,
                     outputDirectory,
-                    analysis);
+                    analysis,
+                    meterNumeratorOverride,
+                    meterDenominatorOverride,
+                    tempoOverride,
+                    tempoUnitOverride);
 
             string scoreViewerDirectory = Path.Combine(
                 FileSystem.AppDataDirectory,
@@ -687,3 +765,4 @@ public partial class MainPage : ContentPage
     #endif
     }
 }
+

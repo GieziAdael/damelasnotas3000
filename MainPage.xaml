@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8" ?>
+<?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="Damelasnotas3000.MainPage"
@@ -54,6 +54,43 @@
                    HorizontalOptions="Center"
                    HorizontalTextAlignment="Center" />
 
+            <Label Text="Ajustes opcionales de partitura"
+                   FontSize="18"
+                   FontAttributes="Bold" />
+
+            <Label Text="Indica el compás o tempo si conoces la referencia. En automático se usa el análisis; si el compás queda sin confirmar, elige aquí el compás conocido. El número de BPM corresponde a la unidad seleccionada."
+                   FontSize="13" />
+
+            <Picker x:Name="MeterOverridePicker"
+                    Title="Compás: automático"
+                    SelectedIndex="0">
+                <Picker.Items>
+                    <x:String>Automático</x:String>
+                    <x:String>2/4</x:String>
+                    <x:String>3/4</x:String>
+                    <x:String>4/4</x:String>
+                    <x:String>6/8</x:String>
+                    <x:String>9/8</x:String>
+                    <x:String>12/8</x:String>
+                </Picker.Items>
+            </Picker>
+
+            <Entry x:Name="TempoOverrideEntry"
+                   Placeholder="Tempo manual en BPM (opcional)"
+                   Keyboard="Numeric"
+                   MaxLength="6" />
+
+            <Picker x:Name="TempoUnitPicker"
+                    Title="Unidad del pulso: automática"
+                    SelectedIndex="0">
+                <Picker.Items>
+                    <x:String>Automático</x:String>
+                    <x:String>Negra</x:String>
+                    <x:String>Corchea</x:String>
+                    <x:String>Negra con puntillo</x:String>
+                    <x:String>Blanca</x:String>
+                </Picker.Items>
+            </Picker>
             <Button x:Name="ConvertButton"
                     Text="Convertir a MIDI"
                     IsEnabled="False"
@@ -107,3 +144,4 @@
     </ScrollView>
 
 </ContentPage>
+
