@@ -204,16 +204,33 @@ public partial class MainPage : ContentPage
                 "Evaluando las notas MIDI contra el audio...";
 
             MidiCleanupResult cleanupResult =
-                await _midiCleanupService.AnalyzeAsync(
-                    audioPath,
-                    midiPath,
-                    outputDirectory);
+    await _midiCleanupService.CleanAsync(
+        audioPath,
+        midiPath,
+        outputDirectory);
+
+            string cleanedMidiPath =
+                cleanupResult.CleanedMidiPath
+                ?? throw new InvalidOperationException(
+                    "El limpiador no devolvió la ruta del MIDI limpio.");
+
+            if (!File.Exists(cleanedMidiPath))
+            {
+                throw new FileNotFoundException(
+                    "No se encontró el MIDI limpio.",
+                    cleanedMidiPath);
+            }
+
+            // El botón Play reproducirá la versión limpia.
+            _midiFilePath = cleanedMidiPath;
 
             string cleanupSummary =
-                $"Diagnóstico MIDI: {cleanupResult.TotalNotes} notas; " +
-                $"{cleanupResult.SupportedCount} con evidencia, " +
-                $"{cleanupResult.ReviewCount} para revisar, " +
+                $"Limpieza MIDI: {cleanupResult.TotalNotes} notas analizadas; " +
+                $"{cleanupResult.RemovedCount} eliminadas; " +
+                $"{cleanupResult.SupportedCount} respaldadas por el audio; " +
+                $"{cleanupResult.ReviewCount} para revisar; " +
                 $"{cleanupResult.InconclusiveCount} inconclusas." +
+                $"{Environment.NewLine}MIDI limpio: {cleanedMidiPath}" +
                 $"{Environment.NewLine}Reporte: {cleanupResult.ReportPath}";
 
             string librosaTempo =
@@ -291,6 +308,32 @@ public partial class MainPage : ContentPage
                     ? margin.ToString("F3")
                     : "no disponible";
 
+            string tempoEstimateSourceLabel =
+                analysis.TempoEstimateSource switch
+                {
+                    "librosa_madmom_consensus" =>
+                        "acuerdo entre Librosa y Madmom",
+                    "librosa_only" =>
+                        "solo Librosa disponible",
+                    "madmom_only" =>
+                        "solo Madmom disponible",
+                    "estimators_disagree" =>
+                        "Librosa y Madmom discrepan",
+                    _ => "sin estimación"
+                };
+
+            string independentTempo =
+                analysis.EstimatedTempoBpm is double estimatedBpm
+                    ? $"{estimatedBpm:F1} BPM " +
+                      $"({tempoEstimateSourceLabel})"
+                    : tempoEstimateSourceLabel;
+
+            if (analysis.TempoEstimatorAgreement is double agreement)
+            {
+                independentTempo +=
+                    $"; cercanía {agreement:P1}";
+            }
+
             string analysisSummary =
                 $"Tempo Librosa: {librosaTempo} BPM" +
                 $"{Environment.NewLine}Tempo Madmom: {madmomTempo} BPM" +
@@ -303,15 +346,17 @@ public partial class MainPage : ContentPage
                 $"{Environment.NewLine}Tempo seleccionado: {selectedTempo}" +
                 $"{Environment.NewLine}Decisión de tempo: {analysis.TempoDecisionReason}" +
                 $"{Environment.NewLine}Hipótesis tempo/compás:" +
-                $"{Environment.NewLine}{tempoHypotheses}";
+                $"{Environment.NewLine}{tempoHypotheses}"+
+                $"{Environment.NewLine}Tempo numérico independiente: {independentTempo}" ;
 
             RecordingStatus.Text =
                 $"Análisis completado.{Environment.NewLine}{analysisSummary}";
 
-            string musicXmlPath = await _musicXmlService.ConvertAsync(
-                midiPath,
-                outputDirectory,
-                analysis);
+            string musicXmlPath =
+                await _musicXmlService.ConvertAsync(
+                    cleanedMidiPath,
+                    outputDirectory,
+                    analysis);
 
             string scoreViewerDirectory = Path.Combine(
                 FileSystem.AppDataDirectory,
@@ -332,8 +377,13 @@ public partial class MainPage : ContentPage
 
             await DisplayAlertAsync(
                 "Conversión completada",
-                $"MIDI generado:{Environment.NewLine}{midiPath}" +
-                $"{Environment.NewLine}{Environment.NewLine}{analysisSummary}",
+                $"MIDI original:{Environment.NewLine}{midiPath}" +
+                $"{Environment.NewLine}{Environment.NewLine}" +
+                $"MIDI limpio:{Environment.NewLine}{cleanedMidiPath}" +
+                $"{Environment.NewLine}{Environment.NewLine}" +
+                $"MusicXML:{Environment.NewLine}{musicXmlPath}" +
+                $"{Environment.NewLine}{Environment.NewLine}" +
+                analysisSummary,
                 "Aceptar");
         }
         catch (Exception ex)

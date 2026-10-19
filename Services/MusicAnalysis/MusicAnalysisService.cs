@@ -53,18 +53,31 @@ public class MusicAnalysisService
                 pythonExe);
         }
 
+        string[] scriptNames =
+        {
+            "meter_analysis.py",
+            "audio_features.py",
+            "beat_grid.py",
+            "beat_tracking.py",
+            "meter_scoring.py",
+            "midi_diagnostics.py",
+            "tempo_meter_selection.py"
+        };
+
+        foreach (string scriptName in scriptNames)
+        {
+            await using Stream source =
+                await FileSystem.OpenAppPackageFileAsync(
+                    $"MusicAnalysis/{scriptName}");
+            await using FileStream destination = File.Create(
+                Path.Combine(outputDirectory, scriptName));
+
+            await source.CopyToAsync(destination);
+        }
+
         string scriptPath = Path.Combine(
             outputDirectory,
             "meter_analysis.py");
-
-        await using (Stream source =
-            await FileSystem.OpenAppPackageFileAsync(
-                "MusicAnalysis/meter_analysis.py"))
-        await using (FileStream destination =
-            File.Create(scriptPath))
-        {
-            await source.CopyToAsync(destination);
-        }
 
         var startInfo = new ProcessStartInfo
         {
@@ -206,5 +219,8 @@ public class MusicAnalysisService
         string? SelectedTempoUnit,
         double? SelectedPulseBpm,
         string? SelectedPulseUnit,
-        int? SelectedGridPulsesPerBar);
+        int? SelectedGridPulsesPerBar,
+        double? EstimatedTempoBpm,
+        string? TempoEstimateSource,
+        double? TempoEstimatorAgreement);
 }

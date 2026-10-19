@@ -26,5 +26,8 @@ namespace Damelasnotas3000.Models
         string? SelectedTempoUnit = null,
         double? SelectedPulseBpm = null,
         string? SelectedPulseUnit = null,
-        int? SelectedGridPulsesPerBar = null);
+        int? SelectedGridPulsesPerBar = null,
+        double? EstimatedTempoBpm = null,
+        string? TempoEstimateSource = null,
+        double? TempoEstimatorAgreement = null);
 }

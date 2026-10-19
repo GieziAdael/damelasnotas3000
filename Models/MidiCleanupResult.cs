@@ -10,5 +10,7 @@ namespace Damelasnotas3000.Models
         int ReviewCount,
         int InconclusiveCount,
         IReadOnlyList<NoteAssessment> Notes,
+        int RemovedCount = 0,
+        string? CleanedMidiPath = null,
         string? ReportPath = null);
 }

@@ -10,22 +10,25 @@ import pretty_midi
 
 AUDIO_PATH = os.environ.get("AUDIO_INPUT")
 MIDI_PATH = os.environ.get("MIDI_INPUT")
+CLEANED_MIDI_PATH = os.environ.get("CLEANED_MIDI_OUTPUT")
 
 SAMPLE_RATE = 22050
 HOP_LENGTH = 256
-
-# Ventana larga para distinguir mejor las alturas.
 PITCH_N_FFT = 4096
-
-# Ventana corta para observar el ataque cerca del inicio MIDI.
-ONSET_N_FFT = 1024
-
+ONSET_N_FFT = 2048
 HARMONICS_TO_CHECK = 8
 EPSILON = 1e-10
 
-# Umbrales iniciales, deliberadamente conservadores.
+# La clasificación "supported" y "review" solo se usa en el reporte.
 SUPPORTED_MIN_DB = 3.0
 REVIEW_MAX_DB = -6.0
+
+# Eliminación automática muy conservadora:
+# se exige que ambas medidas sean muy bajas y que la nota dure al menos
+# 100 ms para no borrar notas breves por falta de resolución temporal.
+AUTO_REMOVE_MAX_PITCH_DB = -15.0
+AUTO_REMOVE_MAX_ONSET_DB = -12.0
+AUTO_REMOVE_MIN_DURATION_SECONDS = 0.10
 
 NOTE_NAMES = [
     "C", "C#", "D", "D#", "E", "F",
@@ -78,14 +81,9 @@ def frames_between(
     return np.arange(first, last, dtype=int)
 
 
-def build_pitch_salience(
-    magnitude,
-    sample_rate,
-    n_fft
-):
+def build_pitch_salience(magnitude, sample_rate, n_fft):
     """
-    Calcula una medida de energía armónica para cada nota MIDI.
-    Se suman varios armónicos porque la fundamental puede ser débil.
+    Estima la energía de cada nota MIDI sumando sus armónicos.
     """
     frame_count = magnitude.shape[1]
     bin_width = float(sample_rate) / float(n_fft)
@@ -116,8 +114,6 @@ def build_pitch_salience(
                 break
 
             center_bin = int(round(frequency / bin_width))
-
-            # Banda estrecha alrededor de cada parcial.
             radius = max(
                 1,
                 int(round((frequency * 0.008) / bin_width))
@@ -138,7 +134,6 @@ def build_pitch_salience(
             )
 
             weight = 1.0 / float(harmonic)
-
             weighted_energy += peak * weight
             total_weight += weight
 
@@ -167,7 +162,10 @@ def ratio_to_db(numerator, denominator):
     numerator = float(numerator)
     denominator = float(denominator)
 
-    if not math.isfinite(numerator) or not math.isfinite(denominator):
+    if not math.isfinite(numerator):
+        return None
+
+    if not math.isfinite(denominator):
         return None
 
     if numerator <= EPSILON and denominator <= EPSILON:
@@ -236,43 +234,81 @@ def calculate_onset_rise(
     hop_length
 ):
     """
-    Compara energía armónica antes y después del inicio MIDI.
-    Si el evento empieza al principio del audio, puede no haber
-    ventana previa suficiente y el resultado queda inconcluso.
+    Compara la energía antes y después del inicio MIDI.
+    Prueba pequeños desplazamientos para tolerar diferencias de unos
+    milisegundos entre el ataque del audio y el inicio del MIDI.
     """
     frame_count = onset_scores.shape[1]
+    rises = []
 
-    before_frames = frames_between(
-        start_seconds - 0.14,
-        start_seconds - 0.06,
-        sample_rate,
-        hop_length,
-        frame_count
-    )
+    for shift in (-0.04, -0.02, 0.0, 0.02, 0.04):
+        shifted_start = start_seconds + shift
 
-    after_frames = frames_between(
-        start_seconds + 0.06,
-        start_seconds + 0.14,
-        sample_rate,
-        hop_length,
-        frame_count
-    )
+        before_frames = frames_between(
+            shifted_start - 0.14,
+            shifted_start - 0.06,
+            sample_rate,
+            hop_length,
+            frame_count
+        )
 
-    if before_frames.size < 2 or after_frames.size < 2:
+        after_frames = frames_between(
+            shifted_start + 0.02,
+            shifted_start + 0.10,
+            sample_rate,
+            hop_length,
+            frame_count
+        )
+
+        if before_frames.size < 2 or after_frames.size < 2:
+            continue
+
+        before_level = median_or_none(
+            onset_scores[pitch, before_frames]
+        )
+
+        after_level = median_or_none(
+            onset_scores[pitch, after_frames]
+        )
+
+        rise = ratio_to_db(after_level, before_level)
+
+        if rise is not None:
+            rises.append(rise)
+
+    if not rises:
         return None
 
-    before_level = median_or_none(
-        onset_scores[pitch, before_frames]
-    )
+    # Se conserva la mejor evidencia encontrada en la ventana cercana.
+    return max(rises)
 
-    after_level = median_or_none(
-        onset_scores[pitch, after_frames]
-    )
 
-    return ratio_to_db(
-        after_level,
-        before_level
-    )
+def make_note_data(
+    event_index,
+    instrument_index,
+    instrument,
+    note
+):
+    instrument_name = instrument.name
+
+    if not instrument_name:
+        instrument_name = f"Instrumento {instrument_index + 1}"
+
+    return {
+        "eventIndex": int(event_index),
+        "instrumentIndex": int(instrument_index),
+        "instrumentName": str(instrument_name),
+        "program": int(instrument.program),
+        "isDrum": bool(instrument.is_drum),
+        "pitch": int(note.pitch),
+        "pitchName": midi_pitch_name(note.pitch),
+        "startSeconds": finite_or_none(note.start, 6),
+        "durationSeconds": finite_or_none(
+            max(0.0, note.end - note.start),
+            6
+        ),
+        "velocity": int(note.velocity)
+    }
 
 
 def assess_note(
@@ -285,7 +321,8 @@ def assess_note(
 ):
     pitch = int(note_data["pitch"])
     start = float(note_data["startSeconds"])
-    end = start + float(note_data["durationSeconds"])
+    duration = float(note_data["durationSeconds"])
+    end = start + duration
 
     if note_data["isDrum"]:
         return {
@@ -294,8 +331,8 @@ def assess_note(
             "onsetRiseDb": None,
             "status": "inconclusive",
             "reason": (
-                "Es un evento de percusión; este análisis tonal "
-                "no está diseñado para evaluarlo."
+                "Es percusión; este análisis tonal no está diseñado "
+                "para evaluarla. Se conserva."
             )
         }
 
@@ -306,14 +343,12 @@ def assess_note(
             "onsetRiseDb": None,
             "status": "inconclusive",
             "reason": (
-                "El evento MIDI queda fuera del audio disponible."
+                "El evento queda fuera del audio disponible. "
+                "Se conserva."
             )
         }
 
-    # Evita que el ataque domine toda la medición de altura.
-    duration = max(0.0, end - start)
     edge = min(0.03, duration * 0.15)
-
     interior_start = start + edge
     interior_end = end - edge
 
@@ -343,37 +378,46 @@ def assess_note(
         hop_length
     )
 
-    if pitch_contrast_db is None or onset_rise_db is None:
-        status = "inconclusive"
+    if (
+        duration >= AUTO_REMOVE_MIN_DURATION_SECONDS
+        and pitch_contrast_db is not None
+        and onset_rise_db is not None
+        and pitch_contrast_db <= AUTO_REMOVE_MAX_PITCH_DB
+        and onset_rise_db <= AUTO_REMOVE_MAX_ONSET_DB
+    ):
+        status = "removed"
         reason = (
-            "No hay suficiente evidencia para comparar la altura "
-            "y el ataque. Puede ser una nota real, una ligadura o "
-            "estar enmascarada por otras notas."
+            "Se eliminó de la copia porque la altura y el ataque "
+            "tienen evidencia extremadamente baja en el audio. "
+            "El MIDI original permanece intacto."
         )
     elif (
-        pitch_contrast_db >= SUPPORTED_MIN_DB and
-        onset_rise_db >= SUPPORTED_MIN_DB
+        pitch_contrast_db is not None
+        and onset_rise_db is not None
+        and pitch_contrast_db >= SUPPORTED_MIN_DB
+        and onset_rise_db >= SUPPORTED_MIN_DB
     ):
         status = "supported"
         reason = (
-            "La altura sobresale de las alturas vecinas y también "
-            "se observa un aumento de energía cerca del ataque."
+            "La altura sobresale de las alturas vecinas y se observa "
+            "un aumento de energía cerca del ataque. Se conserva."
         )
     elif (
-        pitch_contrast_db <= REVIEW_MAX_DB and
-        onset_rise_db <= REVIEW_MAX_DB
+        pitch_contrast_db is not None
+        and onset_rise_db is not None
+        and pitch_contrast_db <= REVIEW_MAX_DB
+        and onset_rise_db <= REVIEW_MAX_DB
     ):
         status = "review"
         reason = (
-            "La altura tiene poco contraste y no se observa un "
-            "ataque claro. Es un candidato para escuchar y revisar; "
-            "esto no confirma que sea una nota falsa."
+            "Tiene poca evidencia de altura y ataque, pero no alcanza "
+            "el umbral estricto para eliminarse automáticamente. "
+            "Se conserva para revisión."
         )
     else:
         status = "inconclusive"
         reason = (
-            "La evidencia de altura y ataque es mixta. No se debe "
-            "corregir automáticamente."
+            "La evidencia es insuficiente o mixta. Se conserva."
         )
 
     return {
@@ -385,34 +429,50 @@ def assess_note(
     }
 
 
-def make_note_data(
-    event_index,
-    instrument_index,
-    instrument,
-    note
+def write_result(
+    midi,
+    output_path,
+    assessments
 ):
-    instrument_name = instrument.name
+    output_directory = os.path.dirname(
+        os.path.abspath(output_path)
+    )
 
-    if not instrument_name:
-        instrument_name = (
-            f"Instrumento {instrument_index + 1}"
-        )
+    os.makedirs(output_directory, exist_ok=True)
+    midi.write(output_path)
 
-    return {
-        "eventIndex": int(event_index),
-        "instrumentIndex": int(instrument_index),
-        "instrumentName": str(instrument_name),
-        "program": int(instrument.program),
-        "isDrum": bool(instrument.is_drum),
-        "pitch": int(note.pitch),
-        "pitchName": midi_pitch_name(note.pitch),
-        "startSeconds": finite_or_none(note.start, 6),
-        "durationSeconds": finite_or_none(
-            max(0.0, note.end - note.start),
-            6
+    result = {
+        "totalNotes": len(assessments),
+        "supportedCount": sum(
+            1 for item in assessments
+            if item["status"] == "supported"
         ),
-        "velocity": int(note.velocity)
+        "reviewCount": sum(
+            1 for item in assessments
+            if item["status"] == "review"
+        ),
+        "inconclusiveCount": sum(
+            1 for item in assessments
+            if item["status"] == "inconclusive"
+        ),
+        "removedCount": sum(
+            1 for item in assessments
+            if item["status"] == "removed"
+        ),
+        "cleanedMidiPath": output_path,
+        "notes": assessments
     }
+
+    print(
+        "CLEANUP_JSON:" +
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":")
+        ),
+        flush=True
+    )
 
 
 def main():
@@ -426,7 +486,21 @@ def main():
             f"No se encontró el MIDI: {MIDI_PATH}"
         )
 
-    # Librosa convierte a mono y remuestrea a 22.05 kHz.
+    if not CLEANED_MIDI_PATH:
+        raise ValueError(
+            "No se indicó la ruta para el MIDI limpio."
+        )
+
+    source_path = os.path.normcase(os.path.abspath(MIDI_PATH))
+    output_path = os.path.normcase(
+        os.path.abspath(CLEANED_MIDI_PATH)
+    )
+
+    if source_path == output_path:
+        raise ValueError(
+            "La salida no puede sobrescribir el MIDI original."
+        )
+
     audio, sample_rate = librosa.load(
         AUDIO_PATH,
         sr=SAMPLE_RATE,
@@ -437,7 +511,6 @@ def main():
         raise ValueError("El archivo de audio está vacío.")
 
     audio_duration = float(audio.size) / float(sample_rate)
-
     midi = pretty_midi.PrettyMIDI(MIDI_PATH)
 
     raw_notes = []
@@ -465,119 +538,80 @@ def main():
     )
 
     if not raw_notes:
-        result = {
-            "totalNotes": 0,
-            "supportedCount": 0,
-            "reviewCount": 0,
-            "inconclusiveCount": 0,
-            "notes": []
-        }
-
-        print(
-            "CLEANUP_JSON:" +
-            json.dumps(result, allow_nan=False)
+        write_result(
+            midi,
+            CLEANED_MIDI_PATH,
+            []
         )
         return
 
-    # Espectrograma de ventana larga: evidencia de altura.
-    pitch_spectrum_complex = librosa.stft(
+    pitch_spectrum = librosa.stft(
         audio,
         n_fft=PITCH_N_FFT,
         hop_length=HOP_LENGTH,
         center=True
     )
 
-    pitch_magnitude = np.abs(
-        pitch_spectrum_complex
-    ).astype(np.float32)
-
-    del pitch_spectrum_complex
-
     pitch_scores = build_pitch_salience(
-        pitch_magnitude,
+        np.abs(pitch_spectrum).astype(np.float32),
         sample_rate,
         PITCH_N_FFT
     )
 
-    del pitch_magnitude
+    del pitch_spectrum
 
-    # Espectrograma de ventana corta: evidencia del ataque.
-    onset_spectrum_complex = librosa.stft(
+    onset_spectrum = librosa.stft(
         audio,
         n_fft=ONSET_N_FFT,
         hop_length=HOP_LENGTH,
         center=True
     )
 
-    onset_magnitude = np.abs(
-        onset_spectrum_complex
-    ).astype(np.float32)
-
-    del onset_spectrum_complex
-
     onset_scores = build_pitch_salience(
-        onset_magnitude,
+        np.abs(onset_spectrum).astype(np.float32),
         sample_rate,
         ONSET_N_FFT
     )
 
-    del onset_magnitude
+    del onset_spectrum
 
     assessments = []
+    notes_to_keep = {
+        index: []
+        for index in range(len(midi.instruments))
+    }
 
     for event_index, item in enumerate(raw_notes):
         _, instrument_index, instrument, note = item
 
         note_data = make_note_data(
-            event_index=event_index,
-            instrument_index=instrument_index,
-            instrument=instrument,
-            note=note
+            event_index,
+            instrument_index,
+            instrument,
+            note
         )
 
         assessment = assess_note(
-            note_data=note_data,
-            pitch_scores=pitch_scores,
-            onset_scores=onset_scores,
-            sample_rate=sample_rate,
-            hop_length=HOP_LENGTH,
-            audio_duration=audio_duration
+            note_data,
+            pitch_scores,
+            onset_scores,
+            sample_rate,
+            HOP_LENGTH,
+            audio_duration
         )
 
         assessments.append(assessment)
 
-    supported_count = sum(
-        1 for item in assessments
-        if item["status"] == "supported"
-    )
+        if assessment["status"] != "removed":
+            notes_to_keep[instrument_index].append(note)
 
-    review_count = sum(
-        1 for item in assessments
-        if item["status"] == "review"
-    )
+    for instrument_index, instrument in enumerate(midi.instruments):
+        instrument.notes = notes_to_keep[instrument_index]
 
-    inconclusive_count = sum(
-        1 for item in assessments
-        if item["status"] == "inconclusive"
-    )
-
-    result = {
-        "totalNotes": len(assessments),
-        "supportedCount": supported_count,
-        "reviewCount": review_count,
-        "inconclusiveCount": inconclusive_count,
-        "notes": assessments
-    }
-
-    print(
-        "CLEANUP_JSON:" +
-        json.dumps(
-            result,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":")
-        ),
-        flush=True
+    write_result(
+        midi,
+        CLEANED_MIDI_PATH,
+        assessments
     )
 
 
@@ -586,7 +620,7 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         print(
-            f"Error en el diagnóstico MIDI: {error}",
+            f"Error en la limpieza MIDI: {error}",
             file=sys.stderr
         )
         raise

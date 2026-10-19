@@ -6,7 +6,7 @@ namespace Damelasnotas3000.Services.MidiCleanup;
 
 public sealed class MidiCleanupService
 {
-    public async Task<MidiCleanupResult> AnalyzeAsync(
+    public async Task<MidiCleanupResult> CleanAsync(
         string audioFilePath,
         string midiFilePath,
         string outputDirectory)
@@ -24,7 +24,7 @@ public sealed class MidiCleanupService
             !File.Exists(midiFilePath))
         {
             throw new FileNotFoundException(
-                "No se encontró el MIDI para evaluar.",
+                "No se encontró el MIDI para limpiar.",
                 midiFilePath);
         }
 
@@ -57,6 +57,10 @@ public sealed class MidiCleanupService
             await source.CopyToAsync(destination);
         }
 
+        string cleanedMidiPath = Path.Combine(
+            outputDirectory,
+            "grabacion_limpia.mid");
+
         string reportPath = Path.Combine(
             outputDirectory,
             "midi_cleanup_diagnostic.json");
@@ -73,6 +77,8 @@ public sealed class MidiCleanupService
 
         startInfo.Environment["AUDIO_INPUT"] = audioFilePath;
         startInfo.Environment["MIDI_INPUT"] = midiFilePath;
+        startInfo.Environment["CLEANED_MIDI_OUTPUT"] =
+            cleanedMidiPath;
 
         startInfo.ArgumentList.Add(scriptPath);
 
@@ -94,7 +100,7 @@ public sealed class MidiCleanupService
         string stdout = await stdoutTask;
         string stderr = await stderrTask;
 
-        Debug.WriteLine("Diagnóstico MIDI:");
+        Debug.WriteLine("Limpieza MIDI:");
         Debug.WriteLine(stdout);
 
         if (!string.IsNullOrWhiteSpace(stderr))
@@ -105,8 +111,16 @@ public sealed class MidiCleanupService
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                "Falló el diagnóstico de eventos MIDI." +
+                "Falló la limpieza de eventos MIDI." +
                 $"{Environment.NewLine}{stderr}" +
+                $"{Environment.NewLine}{stdout}");
+        }
+
+        if (!File.Exists(cleanedMidiPath) ||
+            new FileInfo(cleanedMidiPath).Length == 0)
+        {
+            throw new InvalidOperationException(
+                "El limpiador no generó un MIDI válido." +
                 $"{Environment.NewLine}{stdout}");
         }
 
@@ -122,7 +136,7 @@ public sealed class MidiCleanupService
         if (jsonLine is null)
         {
             throw new InvalidOperationException(
-                "El analizador MIDI no devolvió el JSON esperado." +
+                "El limpiador no devolvió el JSON esperado." +
                 $"{Environment.NewLine}{stdout}");
         }
 
@@ -139,14 +153,17 @@ public sealed class MidiCleanupService
         if (result is null)
         {
             throw new InvalidOperationException(
-                "No se pudo leer el diagnóstico de eventos MIDI.");
+                "No se pudo leer el resultado de la limpieza MIDI.");
         }
 
-        MidiCleanupResult resultWithPath =
-            result with { ReportPath = reportPath };
+        MidiCleanupResult resultWithPaths = result with
+        {
+            CleanedMidiPath = cleanedMidiPath,
+            ReportPath = reportPath
+        };
 
         string prettyJson = JsonSerializer.Serialize(
-            resultWithPath,
+            resultWithPaths,
             new JsonSerializerOptions
             {
                 WriteIndented = true
@@ -156,10 +173,10 @@ public sealed class MidiCleanupService
             reportPath,
             prettyJson);
 
-        return resultWithPath;
+        return resultWithPaths;
 #else
         throw new PlatformNotSupportedException(
-            "El diagnóstico local de eventos está configurado para Windows.");
+            "La limpieza local de eventos está configurada para Windows.");
 #endif
     }
 }
