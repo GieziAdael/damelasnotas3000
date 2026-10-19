@@ -271,7 +271,12 @@ public partial class MainPage : ContentPage
     await _midiCleanupService.CleanAsync(
         audioPath,
         midiPath,
-        outputDirectory);
+        outputDirectory,
+        analysis,
+        meterNumeratorOverride,
+        meterDenominatorOverride,
+        tempoOverride,
+        tempoUnitOverride);
 
             string cleanedMidiPath =
                 cleanupResult.CleanedMidiPath

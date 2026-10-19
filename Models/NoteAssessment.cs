@@ -9,5 +9,9 @@ namespace Damelasnotas3000.Models
         double? PitchContrastDb,
         double? OnsetRiseDb,
         string Status,
-        string Reason);
+        string Reason,
+        double? EvidenceScore = null,
+        double? SustainCoverage = null,
+        bool OctaveOverlapRisk = false,
+        double? PreOnsetPitchRiseDb = null);
 }
