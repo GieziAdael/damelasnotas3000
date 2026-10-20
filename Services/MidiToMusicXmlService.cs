@@ -125,20 +125,19 @@ public class MidiToMusicXmlService
                 denominator.ToString(CultureInfo.InvariantCulture);
         }
 
-        double? tempoBpm = tempoBpmOverride ?? analysis.SelectedTempoBpm;
-        if (tempoBpm is double bpm && double.IsFinite(bpm) && bpm > 0)
+        TempoNotation? tempoNotation = TempoNotationResolver.Resolve(
+            analysis,
+            tempoBpmOverride,
+            tempoUnitOverride);
+
+        if (tempoNotation is not null)
         {
             startInfo.Environment["TEMPO_BPM"] =
-                bpm.ToString("0.###", CultureInfo.InvariantCulture);
-
-            // Si se introduce un BPM manual sin unidad, se interpreta como
-            // negra, que es la convención habitual de las indicaciones BPM.
-            string tempoUnit = tempoUnitOverride ??
-                (tempoBpmOverride.HasValue
-                    ? "quarter"
-                    : analysis.SelectedTempoUnit ?? "quarter");
-
-            startInfo.Environment["TEMPO_UNIT"] = tempoUnit;
+                tempoNotation.BeatsPerMinute.ToString(
+                    "0.###",
+                    CultureInfo.InvariantCulture);
+            startInfo.Environment["TEMPO_UNIT"] =
+                tempoNotation.NoteUnit;
         }
 
         startInfo.ArgumentList.Add(scriptPath);

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Damelasnotas3000.Models;
+using Damelasnotas3000.Services;
 
 namespace Damelasnotas3000.Services.MidiCleanup;
 
@@ -246,20 +247,20 @@ public sealed class MidiCleanupService
                     denominator.ToString(CultureInfo.InvariantCulture);
             }
 
-            double? scoreTempo = tempoBpmOverride ??
-                analysis?.SelectedTempoBpm ??
-                analysis?.MadmomTempoBpm ??
-                analysis?.TempoBpm;
-            if (scoreTempo is double bpm &&
-                double.IsFinite(bpm) && bpm > 0)
+            TempoNotation? scoreTempoNotation =
+                TempoNotationResolver.Resolve(
+                    analysis,
+                    tempoBpmOverride,
+                    tempoUnitOverride);
+
+            if (scoreTempoNotation is not null)
             {
                 startInfo.Environment["SCORE_TEMPO_BPM"] =
-                    bpm.ToString("0.###", CultureInfo.InvariantCulture);
+                    scoreTempoNotation.BeatsPerMinute.ToString(
+                        "0.###",
+                        CultureInfo.InvariantCulture);
                 startInfo.Environment["SCORE_TEMPO_UNIT"] =
-                    tempoUnitOverride ??
-                    (tempoBpmOverride.HasValue
-                        ? "quarter"
-                        : analysis?.SelectedTempoUnit ?? "quarter");
+                    scoreTempoNotation.NoteUnit;
             }
 
             ProcessOutput comparisonOutput = await RunProcessAsync(

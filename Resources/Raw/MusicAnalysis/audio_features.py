@@ -14,7 +14,13 @@ def finite_array(values):
     return values[np.isfinite(values)]
 
 def robust_normalize(values):
-    """Normaliza una serie ignorando valores no finitos."""
+    """Centra y escala una serie con compresión suave de valores extremos.
+
+    La compresión es monótona y no satura los ataques fuertes en un mismo
+    valor. Un recorte duro hacía que muchos pulsos coincidieran en +4; al
+    normalizar de nuevo sus máximos, la mayoría quedaba exactamente en cero
+    y se perdía el contraste rítmico.
+    """
     raw = np.asarray(
         values,
         dtype=float,
@@ -37,15 +43,9 @@ def robust_normalize(values):
     if not np.isfinite(scale) or scale < 1e-8:
         return normalized
 
-    normalized[finite_mask] = (
-        finite_values - median
-    ) / scale
-
-    return np.clip(
-        normalized,
-        -4.0,
-        4.0,
-    )
+    standardized = (finite_values - median) / scale
+    normalized[finite_mask] = np.arcsinh(standardized / 2.0)
+    return normalized
 
 def build_onset_envelope(y, sr):
     """Calcula una sola vez la envolvente de ataques del audio."""
@@ -98,4 +98,7 @@ def sample_onset_strength(onset_envelope, sr, grid_times):
                 np.max(onset_envelope[start:end])
             )
 
-    return robust_normalize(strengths)
+    # La envolvente ya está centrada y escalada globalmente. Se conserva la
+    # diferencia entre pulsos: volver a normalizar este vector por separado
+    # puede colapsar en cero la mayoría de los máximos repetidos.
+    return strengths

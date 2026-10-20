@@ -328,7 +328,10 @@ public partial class MainPage : ContentPage
                 analysis.SelectedTempoBpm is double selectedBpm
                     ? $"{selectedBpm:F1} BPM " +
                       $"({TempoUnitLabel(analysis.SelectedTempoUnit)})"
-                    : "ambiguo; revisar hipótesis";
+                    : analysis.EstimatedTempoBpm is double pulseBpm
+                        ? $"unidad musical sin confirmar; " +
+                          $"pulso estimado {pulseBpm:F1} pulsos/min"
+                        : "ambiguo; revisar hipótesis";
 
             string tempoHypotheses =
                 analysis.TempoHypotheses is { Count: > 0 }
@@ -393,7 +396,7 @@ public partial class MainPage : ContentPage
 
             string independentTempo =
                 analysis.EstimatedTempoBpm is double estimatedBpm
-                    ? $"{estimatedBpm:F1} BPM " +
+                    ? $"{estimatedBpm:F1} pulsos/min " +
                       $"({tempoEstimateSourceLabel})"
                     : tempoEstimateSourceLabel;
 
@@ -401,6 +404,42 @@ public partial class MainPage : ContentPage
             {
                 independentTempo +=
                     $"; cercanía {agreement:P1}";
+            }
+
+            TempoNotation? tempoNotation = TempoNotationResolver.Resolve(
+                analysis,
+                tempoOverride,
+                tempoUnitOverride);
+
+            string tempoNotationSummary;
+            if (tempoNotation is { UsesManualBpm: true } manualNotation)
+            {
+                tempoNotationSummary =
+                    $"{manualNotation.BeatsPerMinute:F1} BPM " +
+                    $"({TempoUnitLabel(manualNotation.NoteUnit)}, manual)";
+            }
+            else if (tempoNotation is { UsesEstimatedPulse: true } estimatedNotation)
+            {
+                tempoNotationSummary =
+                    $"{estimatedNotation.BeatsPerMinute:F1} BPM " +
+                    $"({TempoUnitLabel(estimatedNotation.NoteUnit)} elegida; " +
+                    "pulso estimado)";
+            }
+            else if (tempoNotation is { } analyzedNotation)
+            {
+                tempoNotationSummary =
+                    $"{analyzedNotation.BeatsPerMinute:F1} BPM " +
+                    $"({TempoUnitLabel(analyzedNotation.NoteUnit)}, análisis)";
+            }
+            else if (analysis.EstimatedTempoBpm is not null)
+            {
+                tempoNotationSummary =
+                    "sin marca: falta confirmar la unidad de nota; " +
+                    $"el pulso numérico queda como {independentTempo}";
+            }
+            else
+            {
+                tempoNotationSummary = "sin marca: tempo sin confirmar";
             }
 
             string analysisSummary =
@@ -417,17 +456,14 @@ public partial class MainPage : ContentPage
                 $"{Environment.NewLine}Decisión de tempo: {analysis.TempoDecisionReason}" +
                 $"{Environment.NewLine}Hipótesis tempo/compás:" +
                 $"{Environment.NewLine}{tempoHypotheses}"+
-                $"{Environment.NewLine}Tempo numérico independiente: {independentTempo}" +
+                $"{Environment.NewLine}Pulso numérico independiente: {independentTempo}" +
                 $"{Environment.NewLine}Compás usado en MusicXML: " +
                 (meterNumeratorOverride is int manualNumerator &&
                  meterDenominatorOverride is int manualDenominator
                     ? $"{manualNumerator}/{manualDenominator} (manual)"
                     : $"{selectedMeter} (análisis) / predeterminado si no se confirmó") +
                 $"{Environment.NewLine}Tempo usado en MusicXML: " +
-                (tempoOverride is double manualTempo
-                    ? $"{manualTempo:F1} BPM (manual, " +
-                      $"{TempoUnitLabel(tempoUnitOverride ?? "quarter")})"
-                    : $"{selectedTempo} (análisis)");
+                tempoNotationSummary;
 
             RecordingStatus.Text =
                 $"Análisis completado.{Environment.NewLine}{analysisSummary}";

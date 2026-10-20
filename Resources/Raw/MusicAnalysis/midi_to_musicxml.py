@@ -348,15 +348,28 @@ def apply_time_signature(score):
 def apply_tempo(score):
     tempo_value = os.environ.get("TEMPO_BPM")
     if not tempo_value:
-        print("TEMPO APLICADO: ninguno")
+        print("TEMPO APLICADO: ninguno; BPM no configurado")
         return
 
-    bpm = float(tempo_value)
-    if bpm <= 0:
+    try:
+        bpm = float(tempo_value)
+    except (TypeError, ValueError):
+        print("TEMPO APLICADO: ninguno; BPM no válido")
+        return
+
+    if not math.isfinite(bpm) or bpm <= 0:
         print("TEMPO APLICADO: ninguno; valor no válido")
         return
 
-    tempo_unit = os.environ.get("TEMPO_UNIT", "quarter").strip().lower()
+    tempo_unit_value = os.environ.get("TEMPO_UNIT")
+    if not tempo_unit_value or not tempo_unit_value.strip():
+        print(
+            "TEMPO APLICADO: ninguno; falta TEMPO_UNIT "
+            "(no se asumió negra)"
+        )
+        return
+
+    tempo_unit = tempo_unit_value.strip().lower()
     unit_quarter_lengths = {
         "eighth": 0.5,
         "quarter": 1.0,
