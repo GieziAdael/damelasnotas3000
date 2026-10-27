@@ -23,7 +23,7 @@
                    HorizontalOptions="Center" />
 
             <Label x:Name="RecordingStatus"
-                   Text="Listo para grabar"
+                   Text="Listo para grabar o escoger audio"
                    FontSize="16"
                    HorizontalOptions="Center"
                    HorizontalTextAlignment="Center" />
@@ -36,6 +36,11 @@
                     TextColor="White"
                     HeightRequest="60" />
 
+            <Button x:Name="PickAudioButton"
+                    Text="📂 Escoger audio WAV"
+                    Clicked="OnPickAudioClicked"
+                    HeightRequest="55" />
+
             <Button x:Name="StopButton"
                     Text="■ Detener grabación"
                     Clicked="OnStopClicked"
@@ -43,16 +48,41 @@
                     HeightRequest="55" />
 
             <Button x:Name="DiscardButton"
-                    Text="✕ Descartar grabación"
+                    Text="✕ Quitar audio"
                     Clicked="OnDiscardClicked"
                     IsEnabled="False"
                     HeightRequest="55" />
 
             <Label x:Name="AudioFileStatus"
-                   Text="No hay audio grabado"
+                   Text="No hay audio seleccionado"
                    FontSize="13"
                    HorizontalOptions="Center"
                    HorizontalTextAlignment="Center" />
+
+            <Label Text="Transcriptor que alimenta la partitura"
+                   FontSize="16"
+                   FontAttributes="Bold" />
+
+            <Picker x:Name="TranscriptionEnginePicker"
+                    Title="Motor de transcripción"
+                    SelectedIndex="0">
+                <Picker.Items>
+                    <x:String>Magenta</x:String>
+                    <x:String>Basic Pitch</x:String>
+                </Picker.Items>
+            </Picker>
+
+            <Label Text="Por defecto se ejecuta solo el motor seleccionado. Activa la comparación para generar ambos MIDI; tarda más."
+                   FontSize="12" />
+
+            <HorizontalStackLayout Spacing="8"
+                                   VerticalOptions="Center">
+                <CheckBox x:Name="CompareEnginesCheckBox"
+                          IsChecked="False" />
+                <Label Text="Comparar ambos motores"
+                       FontSize="14"
+                       VerticalOptions="Center" />
+            </HorizontalStackLayout>
 
             <Label Text="Ajustes opcionales de partitura"
                    FontSize="18"

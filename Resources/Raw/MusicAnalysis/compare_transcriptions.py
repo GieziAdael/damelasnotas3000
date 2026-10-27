@@ -6,9 +6,11 @@ La comparacion es diagnostica: nunca borra notas de Magenta.
 
 Variables de entorno requeridas:
   AUDIO_INPUT
-  MAGENTA_MIDI_INPUT
+  MAGENTA_MIDI_INPUT (excepto en modo BASIC_PITCH_ONLY)
 
 Variables opcionales:
+  BASIC_PITCH_ONLY (genera un MIDI de Basic Pitch sin comparar)
+  BASIC_PITCH_MIDI_INPUT (reutiliza una transcripcion ya generada)
   BASIC_PITCH_MIDI_OUTPUT
   CONSENSUS_MIDI_OUTPUT
   COMPARISON_REPORT_OUTPUT
@@ -504,13 +506,20 @@ def write_csv(path, magenta_rows, basic_rows):
 
 def run():
     audio_path = Path(require_env("AUDIO_INPUT"))
-    magenta_path = Path(require_env("MAGENTA_MIDI_INPUT"))
+    basic_pitch_only = os.environ.get("BASIC_PITCH_ONLY", "").strip().lower() in {
+        "1", "true", "yes", "si", "sí",
+    }
+    magenta_value = os.environ.get("MAGENTA_MIDI_INPUT")
+    if not basic_pitch_only and not magenta_value:
+        raise RuntimeError("Falta la variable de entorno MAGENTA_MIDI_INPUT.")
+    magenta_path = Path(magenta_value) if magenta_value else None
     if not audio_path.is_file():
         raise FileNotFoundError(f"No se encontro el audio: {audio_path}")
-    if not magenta_path.is_file():
+    if magenta_path is not None and not magenta_path.is_file():
         raise FileNotFoundError(f"No se encontro el MIDI de Magenta: {magenta_path}")
 
-    output_dir = Path(os.environ.get("COMPARISON_OUTPUT_DIRECTORY", str(magenta_path.parent)))
+    default_output_dir = magenta_path.parent if magenta_path else audio_path.parent
+    output_dir = Path(os.environ.get("COMPARISON_OUTPUT_DIRECTORY", str(default_output_dir)))
     output_dir.mkdir(parents=True, exist_ok=True)
     basic_midi_path = Path(os.environ.get(
         "BASIC_PITCH_MIDI_OUTPUT",
@@ -538,65 +547,82 @@ def run():
 
     # Spotify Basic Pitch es un modelo independiente de Magenta. Se usa su API
     # oficial y se conserva su transcripcion completa como un archivo separado.
-    print("BASIC_PITCH_STATUS: loading_model", flush=True)
-    import basic_pitch.inference as basic_pitch_inference
-
-    # No se cambia el modelo ni el decoder de Basic Pitch; solo la lectura de
-    # WAV para hacer mono y remuestrear a 22.05 kHz antes de su inferencia.
-    basic_pitch_inference.librosa.load = _load_audio_for_basic_pitch
-
-    print("BASIC_PITCH_STATUS: transcribing_audio", flush=True)
     minimum_note_length_ms = float(os.environ.get(
         "BASIC_PITCH_MINIMUM_NOTE_LENGTH_MS", "45.0"
     ))
-    onnx_model_path = (
-        Path(basic_pitch_inference.__file__).resolve().parent
-        / "saved_models"
-        / "icassp_2022"
-        / "nmp.onnx"
-    )
-    if onnx_model_path.is_file() and basic_pitch_inference.ONNX_PRESENT:
-        # En Windows, Basic Pitch incluye ONNX. Si TensorFlow tambien esta
-        # instalado, su selector prefiere TensorFlow; elegimos ONNX para evitar
-        # cargar el SavedModel mas pesado en cada grabacion.
-        basic_pitch_inference.TF_PRESENT = False
-        basic_pitch_inference.TFLITE_PRESENT = False
-        ort = basic_pitch_inference.ort
-        original_inference_session = ort.InferenceSession
-
-        def bounded_inference_session(path, *args, **kwargs):
-            session_options = kwargs.pop("sess_options", None)
-            if session_options is None:
-                session_options = ort.SessionOptions()
-                session_options.intra_op_num_threads = min(
-                    4, max(1, os.cpu_count() or 1)
-                )
-                session_options.inter_op_num_threads = 1
-                session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            return original_inference_session(
-                path,
-                *args,
-                sess_options=session_options,
-                **kwargs,
+    existing_basic_pitch_path = os.environ.get("BASIC_PITCH_MIDI_INPUT")
+    if existing_basic_pitch_path:
+        existing_path = Path(existing_basic_pitch_path)
+        if not existing_path.is_file():
+            raise FileNotFoundError(
+                f"No se encontro el MIDI existente de Basic Pitch: {existing_path}"
             )
-
-        ort.InferenceSession = bounded_inference_session
-        model = basic_pitch_inference.Model(str(onnx_model_path))
-        ort.InferenceSession = original_inference_session
-        _, basic_midi, _ = basic_pitch_inference.predict(
-            audio_path=str(audio_path),
-            model_or_model_path=model,
-            minimum_note_length=minimum_note_length_ms,
-        )
+        print("BASIC_PITCH_STATUS: reusing_existing_midi", flush=True)
+        basic_midi = pretty_midi.PrettyMIDI(str(existing_path))
+        if existing_path.resolve() != basic_midi_path.resolve():
+            basic_midi.write(str(basic_midi_path))
     else:
-        _, basic_midi, _ = basic_pitch_inference.predict(
-            audio_path=str(audio_path),
-            minimum_note_length=minimum_note_length_ms,
+        print("BASIC_PITCH_STATUS: loading_model", flush=True)
+        import basic_pitch.inference as basic_pitch_inference
+
+        # No se cambia el modelo ni el decoder; solo se normaliza la lectura.
+        basic_pitch_inference.librosa.load = _load_audio_for_basic_pitch
+
+        print("BASIC_PITCH_STATUS: transcribing_audio", flush=True)
+        onnx_model_path = (
+            Path(basic_pitch_inference.__file__).resolve().parent
+            / "saved_models"
+            / "icassp_2022"
+            / "nmp.onnx"
         )
+        if onnx_model_path.is_file() and basic_pitch_inference.ONNX_PRESENT:
+            # En Windows se prefiere ONNX para evitar cargar TensorFlow.
+            basic_pitch_inference.TF_PRESENT = False
+            basic_pitch_inference.TFLITE_PRESENT = False
+            ort = basic_pitch_inference.ort
+            original_inference_session = ort.InferenceSession
+
+            def bounded_inference_session(path, *args, **kwargs):
+                session_options = kwargs.pop("sess_options", None)
+                if session_options is None:
+                    session_options = ort.SessionOptions()
+                    session_options.intra_op_num_threads = min(
+                        4, max(1, os.cpu_count() or 1)
+                    )
+                    session_options.inter_op_num_threads = 1
+                    session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                return original_inference_session(
+                    path,
+                    *args,
+                    sess_options=session_options,
+                    **kwargs,
+                )
+
+            ort.InferenceSession = bounded_inference_session
+            try:
+                model = basic_pitch_inference.Model(str(onnx_model_path))
+            finally:
+                ort.InferenceSession = original_inference_session
+            _, basic_midi, _ = basic_pitch_inference.predict(
+                audio_path=str(audio_path),
+                model_or_model_path=model,
+                minimum_note_length=minimum_note_length_ms,
+            )
+        else:
+            _, basic_midi, _ = basic_pitch_inference.predict(
+                audio_path=str(audio_path),
+                minimum_note_length=minimum_note_length_ms,
+            )
+        if basic_midi is not None:
+            basic_midi.write(str(basic_midi_path))
+
     if basic_midi is None:
         raise RuntimeError("Basic Pitch no devolvio una transcripcion MIDI.")
-    print("BASIC_PITCH_STATUS: saving_midi", flush=True)
-    basic_midi.write(str(basic_midi_path))
+    print("BASIC_PITCH_STATUS: midi_ready", flush=True)
+    if basic_pitch_only:
+        print("BASIC_PITCH_MIDI:" + str(basic_midi_path), flush=True)
+        print("BASIC_PITCH_TRANSCRIPTION_READY", flush=True)
+        return
 
     analysis_waveform, analysis_sample_rate = _load_audio_for_basic_pitch(
         audio_path

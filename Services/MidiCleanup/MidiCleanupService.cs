@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,7 +17,10 @@ public sealed class MidiCleanupService
         int? meterNumeratorOverride = null,
         int? meterDenominatorOverride = null,
         double? tempoBpmOverride = null,
-        string? tempoUnitOverride = null)
+        string? tempoUnitOverride = null,
+        string? comparisonMagentaMidiPath = null,
+        string? basicPitchMidiPath = null,
+        bool compareTranscribers = false)
     {
 #if WINDOWS
         if (string.IsNullOrWhiteSpace(audioFilePath) ||
@@ -145,15 +148,53 @@ public sealed class MidiCleanupService
                 })?.AsObject()
             ?? new JsonObject();
 
-        JsonNode comparison = await RunComparisonIfAvailableAsync(
-            audioFilePath,
-            midiFilePath,
-            outputDirectory,
-            analysis,
-            meterNumeratorOverride,
-            meterDenominatorOverride,
-            tempoBpmOverride,
-            tempoUnitOverride);
+        diagnostic["cleaningStatus"] =
+            cleanupResult.RemovedCount > 0
+                ? "notes_removed"
+                : "no_notes_removed";
+        diagnostic["cleaningSummary"] =
+            cleanupResult.RemovedCount > 0
+                ? $"Se retiraron {cleanupResult.RemovedCount} eventos de la copia MIDI."
+                : "No se retiraron eventos; la copia conserva todas las notas evaluadas.";
+
+        JsonNode comparison;
+        if (!compareTranscribers)
+        {
+            comparison = new JsonObject
+            {
+                ["status"] = "skipped",
+                ["reason"] =
+                    "La comparación está desactivada. Solo se transcribió " +
+                    "el motor seleccionado."
+            };
+        }
+        else if (
+            string.IsNullOrWhiteSpace(comparisonMagentaMidiPath) ||
+            !File.Exists(comparisonMagentaMidiPath) ||
+            string.IsNullOrWhiteSpace(basicPitchMidiPath) ||
+            !File.Exists(basicPitchMidiPath))
+        {
+            comparison = new JsonObject
+            {
+                ["status"] = "incomplete",
+                ["reason"] =
+                    "Se solicitó comparar ambos motores, pero falta una " +
+                    "transcripción. El comparador no volvió a ejecutar modelos."
+            };
+        }
+        else
+        {
+            comparison = await RunComparisonIfAvailableAsync(
+                audioFilePath,
+                comparisonMagentaMidiPath,
+                basicPitchMidiPath,
+                outputDirectory,
+                analysis,
+                meterNumeratorOverride,
+                meterDenominatorOverride,
+                tempoBpmOverride,
+                tempoUnitOverride);
+        }
 
         diagnostic["transcriptionComparison"] = comparison;
 
@@ -175,6 +216,7 @@ public sealed class MidiCleanupService
     private static async Task<JsonNode> RunComparisonIfAvailableAsync(
         string audioFilePath,
         string magentaMidiPath,
+        string? basicPitchMidiPath,
         string outputDirectory,
         MusicAnalysisResult? analysis,
         int? meterNumeratorOverride,
@@ -219,10 +261,21 @@ public sealed class MidiCleanupService
 
             startInfo.Environment["AUDIO_INPUT"] = audioFilePath;
             startInfo.Environment["MAGENTA_MIDI_INPUT"] = magentaMidiPath;
+            startInfo.Environment.Remove("BASIC_PITCH_ONLY");
             startInfo.Environment["COMPARISON_OUTPUT_DIRECTORY"] = outputDirectory;
             startInfo.Environment["BASIC_PITCH_MIDI_OUTPUT"] = Path.Combine(
                 outputDirectory,
                 "grabacion_basic_pitch.mid");
+            if (!string.IsNullOrWhiteSpace(basicPitchMidiPath) &&
+                File.Exists(basicPitchMidiPath))
+            {
+                startInfo.Environment["BASIC_PITCH_MIDI_INPUT"] =
+                    basicPitchMidiPath;
+            }
+            else
+            {
+                startInfo.Environment.Remove("BASIC_PITCH_MIDI_INPUT");
+            }
             startInfo.Environment["CONSENSUS_MIDI_OUTPUT"] = Path.Combine(
                 outputDirectory,
                 "grabacion_consenso.mid");

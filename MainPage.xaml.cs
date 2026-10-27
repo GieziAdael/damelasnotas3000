@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using Damelasnotas3000.Models;
 using Damelasnotas3000.Services;
 using Damelasnotas3000.Services.MidiCleanup;
@@ -15,6 +16,7 @@ public partial class MainPage : ContentPage
     private string? _midiFilePath;
     private readonly AudioRecordingService _audioRecordingService;
     private readonly MagentaService _magentaService;
+    private readonly BasicPitchService _basicPitchService;
     private readonly MidiToMusicXmlService _musicXmlService;
     private readonly MidiPlaybackService _midiPlaybackService = new();
     private readonly MusicAnalysisService _musicAnalysisService;
@@ -27,6 +29,7 @@ public partial class MainPage : ContentPage
         _recorder = AudioManager.Current.CreateRecorder();
         _audioRecordingService = new AudioRecordingService(_recorder);
         _magentaService = new MagentaService();
+        _basicPitchService = new BasicPitchService();
         _musicXmlService = new MidiToMusicXmlService();
         _musicAnalysisService = new MusicAnalysisService();
         _midiCleanupService = new MidiCleanupService();
@@ -94,6 +97,86 @@ public partial class MainPage : ContentPage
     /// </summary>
     /// <param name="sender">El control que generó el evento.</param>
     /// <param name="e">Los datos asociados al evento.</param>
+    private async void OnPickAudioClicked(object sender, EventArgs e)
+    {
+#if WINDOWS
+        string? copiedAudioPath = null;
+        try
+        {
+            FileResult? result = await FilePicker.Default.PickAsync(new PickOptions
+            {
+                PickerTitle = "Selecciona un archivo de audio WAV",
+                FileTypes = new FilePickerFileType(
+                    new Dictionary<DevicePlatform, IEnumerable<string>>
+                    {
+                        [DevicePlatform.WinUI] = new[] { ".wav" }
+                    })
+            });
+
+            if (result is null)
+                return;
+
+            if (!Path.GetExtension(result.FileName).Equals(
+                    ".wav", StringComparison.OrdinalIgnoreCase))
+            {
+                await DisplayAlertAsync(
+                    "Formato no compatible",
+                    "Selecciona un archivo WAV. Es el formato que acepta actualmente el motor de transcripción.",
+                    "Aceptar");
+                return;
+            }
+
+            string importedDirectory = Path.Combine(
+                FileSystem.AppDataDirectory,
+                "ImportedAudio");
+            Directory.CreateDirectory(importedDirectory);
+
+            copiedAudioPath = Path.Combine(
+                importedDirectory,
+                $"audio_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.wav");
+
+            await using Stream source = await result.OpenReadAsync();
+            await using FileStream destination = new(
+                copiedAudioPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None);
+            await source.CopyToAsync(destination);
+
+            if (destination.Length == 0)
+            {
+                throw new InvalidDataException(
+                    "El archivo seleccionado está vacío.");
+            }
+
+            _audioFilePath = copiedAudioPath;
+            RecordingStatus.Text = "Audio listo para analizar";
+            AudioFileStatus.Text =
+                $"Audio seleccionado: {Path.GetFileName(result.FileName)}";
+
+            RecordButton.IsEnabled = true;
+            PickAudioButton.IsEnabled = true;
+            StopButton.IsEnabled = false;
+            DiscardButton.IsEnabled = true;
+            ConvertButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            if (!string.IsNullOrWhiteSpace(copiedAudioPath) &&
+                File.Exists(copiedAudioPath))
+            {
+                File.Delete(copiedAudioPath);
+            }
+
+            await DisplayAlertAsync("Error al escoger audio", ex.Message, "Aceptar");
+        }
+#else
+        await DisplayAlertAsync(
+            "No disponible",
+            "La selección local de audio está configurada para Windows.",
+            "Aceptar");
+#endif
+    }
     private async void OnRecordClicked(object sender, EventArgs e)
     {
         try
@@ -112,6 +195,7 @@ public partial class MainPage : ContentPage
             await _audioRecordingService.StartRecordingAsync();
 
             _isRecording = true;
+            PickAudioButton.IsEnabled = false;
             RecordingStatus.Text = "Grabando audio...";
             RecordButton.IsEnabled = false;
             StopButton.IsEnabled = true;
@@ -153,6 +237,7 @@ public partial class MainPage : ContentPage
             _isRecording = false;
 
             RecordingStatus.Text = "Grabación finalizada";
+            PickAudioButton.IsEnabled = true;
             AudioFileStatus.Text =
                 $"Audio guardado: {Path.GetFileName(_audioFilePath)}";
 
@@ -182,9 +267,10 @@ public partial class MainPage : ContentPage
         try
         {
             await _audioRecordingService.DiscardAsync();
+            DeleteAudioFile();
 
-            RecordingStatus.Text = "Listo para grabar";
-            AudioFileStatus.Text = "No hay audio grabado";
+            RecordingStatus.Text = "Listo para grabar o escoger audio";
+            AudioFileStatus.Text = "No hay audio seleccionado";
 
             RecordButton.IsEnabled = true;
             StopButton.IsEnabled = false;
@@ -222,13 +308,14 @@ public partial class MainPage : ContentPage
         {
             await DisplayAlertAsync(
                 "Error",
-                "No se encontró el archivo de audio. Graba primero.",
+                "No se encontró el audio. Escoge un archivo WAV o graba uno primero.",
                 "Aceptar");
             return;
         }
 
         ConvertButton.IsEnabled = false;
         RecordButton.IsEnabled = false;
+        PickAudioButton.IsEnabled = false;
         StopButton.IsEnabled = false;
         DiscardButton.IsEnabled = false;
 
@@ -240,7 +327,10 @@ public partial class MainPage : ContentPage
             double? tempoOverride = ReadTempoOverride();
             string? tempoUnitOverride = ReadTempoUnitOverride();
 
-            RecordingStatus.Text = "Transcribiendo con Magenta...";
+            string selectedEngine =
+                TranscriptionEnginePicker.SelectedItem?.ToString() ?? "Magenta";
+            bool useBasicPitch = selectedEngine == "Basic Pitch";
+            bool compareBothEngines = CompareEnginesCheckBox.IsChecked;
 
             string outputDirectory = Path.Combine(
                 FileSystem.AppDataDirectory,
@@ -250,14 +340,78 @@ public partial class MainPage : ContentPage
             Directory.CreateDirectory(outputDirectory);
 
             string audioPath = _audioFilePath;
+            string? magentaMidiPath = null;
+            Exception? magentaError = null;
+            string? basicPitchMidiPath = null;
+            Exception? basicPitchError = null;
 
-            string midiPath = await _magentaService.TranscribeAsync(
-                audioPath,
-                outputDirectory);
+            if (useBasicPitch)
+            {
+                RecordingStatus.Text = "Transcribiendo con Basic Pitch...";
+                basicPitchMidiPath = await _basicPitchService.TranscribeAsync(
+                    audioPath,
+                    outputDirectory);
+            }
+            else
+            {
+                RecordingStatus.Text = "Transcribiendo con Magenta...";
+                magentaMidiPath = await _magentaService.TranscribeAsync(
+                    audioPath,
+                    outputDirectory);
+            }
+
+            if (compareBothEngines)
+            {
+                if (useBasicPitch)
+                {
+                    RecordingStatus.Text =
+                        "Generando la segunda transcripción con Magenta...";
+                    try
+                    {
+                        magentaMidiPath = await _magentaService.TranscribeAsync(
+                            audioPath,
+                            outputDirectory);
+                    }
+                    catch (Exception exception)
+                    {
+                        magentaError = exception;
+                        Debug.WriteLine(
+                            "No se pudo generar el MIDI de Magenta: " + exception);
+                    }
+                }
+                else
+                {
+                    RecordingStatus.Text =
+                        "Generando la segunda transcripción con Basic Pitch...";
+                    try
+                    {
+                        basicPitchMidiPath = await _basicPitchService.TranscribeAsync(
+                            audioPath,
+                            outputDirectory);
+                    }
+                    catch (Exception exception)
+                    {
+                        basicPitchError = exception;
+                        Debug.WriteLine(
+                            "No se pudo generar el MIDI de Basic Pitch: " + exception);
+                    }
+                }
+            }
+
+            string midiPath = useBasicPitch
+                ? basicPitchMidiPath
+                    ?? throw new InvalidOperationException(
+                        "Basic Pitch no generó el MIDI seleccionado.",
+                        basicPitchError)
+                : magentaMidiPath
+                    ?? throw new InvalidOperationException(
+                        "Magenta no generó el MIDI seleccionado.",
+                        magentaError);
+            string engineLabel = useBasicPitch ? "Basic Pitch" : "Magenta";
 
             _midiFilePath = midiPath;
 
-            RecordingStatus.Text = "Analizando audio y MIDI...";
+            RecordingStatus.Text = $"Analizando el MIDI de {engineLabel}...";
 
             var analysis = await _musicAnalysisService.AnalyzeAsync(
                 audioPath,
@@ -268,15 +422,18 @@ public partial class MainPage : ContentPage
                 "Evaluando las notas MIDI contra el audio...";
 
             MidiCleanupResult cleanupResult =
-    await _midiCleanupService.CleanAsync(
-        audioPath,
-        midiPath,
-        outputDirectory,
-        analysis,
-        meterNumeratorOverride,
-        meterDenominatorOverride,
-        tempoOverride,
-        tempoUnitOverride);
+                await _midiCleanupService.CleanAsync(
+                    audioPath,
+                    midiPath,
+                    outputDirectory,
+                    analysis,
+                    meterNumeratorOverride,
+                    meterDenominatorOverride,
+                    tempoOverride,
+                    tempoUnitOverride,
+                    magentaMidiPath,
+                    basicPitchMidiPath,
+                    compareBothEngines);
 
             string cleanedMidiPath =
                 cleanupResult.CleanedMidiPath
@@ -290,17 +447,33 @@ public partial class MainPage : ContentPage
                     cleanedMidiPath);
             }
 
-            // El botón Play reproducirá la versión limpia.
+            // El botón Play reproducirá la copia evaluada del MIDI.
             _midiFilePath = cleanedMidiPath;
 
+            string cleanupOutcome = cleanupResult.RemovedCount > 0
+                ? $"Se retiraron {cleanupResult.RemovedCount} eventos de la copia MIDI."
+                : "No se retiraron eventos; la copia conserva todas las notas evaluadas.";
+            string comparisonStatus = compareBothEngines
+                ? "solicitada; consulta el estado en el reporte"
+                : "desactivada";
+
             string cleanupSummary =
-                $"Limpieza MIDI: {cleanupResult.TotalNotes} notas analizadas; " +
-                $"{cleanupResult.RemovedCount} eliminadas; " +
-                $"{cleanupResult.SupportedCount} respaldadas por el audio; " +
+                $"Evaluación de notas MIDI: {cleanupResult.TotalNotes} eventos; " +
+                $"{cleanupResult.SupportedCount} respaldados por el audio; " +
                 $"{cleanupResult.ReviewCount} para revisar; " +
-                $"{cleanupResult.InconclusiveCount} inconclusas." +
-                $"{Environment.NewLine}MIDI limpio: {cleanedMidiPath}" +
+                $"{cleanupResult.InconclusiveCount} inconclusos." +
+                $"{Environment.NewLine}{cleanupOutcome}" +
+                $"{Environment.NewLine}MIDI de salida: {cleanedMidiPath}" +
                 $"{Environment.NewLine}Reporte: {cleanupResult.ReportPath}";
+
+            string magentaMidiStatus = magentaMidiPath ??
+                (magentaError is null
+                    ? "no generado; comparación desactivada"
+                    : $"no disponible ({magentaError.Message})");
+            string basicPitchMidiStatus = basicPitchMidiPath ??
+                (basicPitchError is null
+                    ? "no generado; comparación desactivada"
+                    : $"no disponible ({basicPitchError.Message})");
 
             string librosaTempo =
                 analysis.TempoBpm?.ToString("F1") ?? "sin dato";
@@ -443,7 +616,11 @@ public partial class MainPage : ContentPage
             }
 
             string analysisSummary =
-                $"Tempo Librosa: {librosaTempo} BPM" +
+                $"Transcriptor principal: {engineLabel}" +
+                $"{Environment.NewLine}MIDI Magenta: {magentaMidiStatus}" +
+                $"{Environment.NewLine}MIDI Basic Pitch: {basicPitchMidiStatus}" +
+                $"{Environment.NewLine}Comparación de motores: {comparisonStatus}" +
+                $"{Environment.NewLine}Tempo Librosa: {librosaTempo} BPM" +
                 $"{Environment.NewLine}Tempo Madmom: {madmomTempo} BPM" +
                 $"{Environment.NewLine}Tempos candidatos: {tempoCandidates}" +
                 $"{Environment.NewLine}Compás seleccionado: {selectedMeter}" +
@@ -497,9 +674,9 @@ public partial class MainPage : ContentPage
 
             await DisplayAlertAsync(
                 "Conversión completada",
-                $"MIDI original:{Environment.NewLine}{midiPath}" +
+                $"MIDI seleccionado:{Environment.NewLine}{midiPath}" +
                 $"{Environment.NewLine}{Environment.NewLine}" +
-                $"MIDI limpio:{Environment.NewLine}{cleanedMidiPath}" +
+                $"MIDI de salida evaluado:{Environment.NewLine}{cleanedMidiPath}" +
                 $"{Environment.NewLine}{Environment.NewLine}" +
                 $"MusicXML:{Environment.NewLine}{musicXmlPath}" +
                 $"{Environment.NewLine}{Environment.NewLine}" +
@@ -518,9 +695,12 @@ public partial class MainPage : ContentPage
         finally
         {
             RecordButton.IsEnabled = true;
+            PickAudioButton.IsEnabled = true;
             StopButton.IsEnabled = false;
             DiscardButton.IsEnabled = false;
-            ConvertButton.IsEnabled = false;
+            ConvertButton.IsEnabled =
+                !string.IsNullOrWhiteSpace(_audioFilePath) &&
+                File.Exists(_audioFilePath);
 
             PlayButton.IsEnabled =
                 !string.IsNullOrWhiteSpace(_midiFilePath) &&
@@ -567,29 +747,6 @@ public partial class MainPage : ContentPage
 
 
 
-    private static string? FindBasicPitchExecutable()
-    {
-        // Busca la carpeta del proyecto a partir de la ubicación
-        // de ejecución de la aplicación.
-        DirectoryInfo? directory =
-            new DirectoryInfo(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-            string candidate = Path.Combine(
-                directory.FullName,
-                ".venv",
-                "Scripts",
-                "basic-pitch.exe");
-
-            if (File.Exists(candidate))
-                return candidate;
-
-            directory = directory.Parent;
-        }
-
-        return null;
-    }
 
     /// <summary>
     /// Hoja donde estara MIDI, prepara el visor

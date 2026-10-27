@@ -26,8 +26,10 @@ MIN_SPLIT_POINT = 48  # C3
 MAX_SPLIT_POINT = 72  # C5
 DEFAULT_SPLIT_POINT = 60  # C4
 AMBIGUOUS_SEMITONES = 4
-ONSET_GROUP_TOLERANCE_QL = 0.035
-RHYTHMIC_SUBDIVISIONS = (1, 2, 3, 4, 6, 8, 12, 16)
+ONSET_GROUP_TOLERANCE_QL = 0.06
+# La grabación no aporta evidencia fiable para tuplets. Se mantiene una
+# cuadrícula binaria legible, hasta semicorcheas.
+RHYTHMIC_SUBDIVISIONS = (1, 2, 4)
 
 
 def weighted_mean(values):
@@ -129,14 +131,33 @@ def _percentile(values, fraction):
     return ordered[index]
 
 
-def estimate_rhythmic_grid(records):
-    """Elige la subdivisión más sencilla que explica los ataques del MIDI.
+def _group_onsets(records, tolerance=None):
+    """Agrupa ataques casi simultáneos para absorber el jitter del transcriptor."""
+    if tolerance is None:
+        tolerance = ONSET_GROUP_TOLERANCE_QL
 
-    Los MIDI generados por transcripción suelen contener pequeñas variaciones
-    de tiempo. Sin esta etapa, music21 interpreta esas variaciones como muchas
-    duraciones irregulares y las muestra como tuplets o figuras difíciles.
+    groups = []
+    for record in sorted(records, key=lambda item: item["startQL"]):
+        if (
+            not groups
+            or record["startQL"] - groups[-1][0]["startQL"]
+            > tolerance + 1e-9
+        ):
+            groups.append([])
+        groups[-1].append(record)
+    return groups
+
+
+def estimate_rhythmic_grid(records):
+    """Elige la cuadrícula binaria más sencilla que explica los ataques.
+
+    Los ataques casi simultáneos se miden como un solo grupo: el retraso de una
+    nota dentro de un acorde no debe obligar a usar una cuadrícula más fina.
     """
-    onsets = [record["startQL"] for record in records]
+    onsets = [
+        statistics.median(record["startQL"] for record in group)
+        for group in _group_onsets(records)
+    ]
     if len(onsets) < 3:
         return 4, 0.0, 0.0
 
@@ -150,9 +171,9 @@ def estimate_rhythmic_grid(records):
         median_error = statistics.median(errors)
         upper_error = _percentile(errors, 0.85)
 
-        # El coste pequeño por complejidad hace que, si dos cuadrículas
-        # explican igual los ataques, se prefiera la subdivisión más simple.
-        complexity_cost = 0.006 * math.log2(subdivisions)
+        # Si dos cuadrículas explican los ataques de forma parecida, preferir
+        # la que genera menos figuras pequeñas.
+        complexity_cost = 0.012 * math.log2(subdivisions)
         score = median_error + 0.35 * upper_error + complexity_cost
         candidates.append((score, subdivisions, median_error, upper_error))
 
@@ -161,21 +182,21 @@ def estimate_rhythmic_grid(records):
 
 
 def quantize_records(records):
-    """Alinea inicios y finales a una cuadrícula rítmica común."""
+    """Alinea grupos de ataques y duraciones a una cuadrícula común."""
     subdivisions, median_error, upper_error = estimate_rhythmic_grid(records)
     step = 1.0 / subdivisions
 
-    for record in records:
-        original_start = record["startQL"]
-        original_end = original_start + record["durationQL"]
-
-        quantized_start = round(original_start / step) * step
-        quantized_end = round(original_end / step) * step
-        if quantized_end <= quantized_start:
-            quantized_end = quantized_start + step
-
-        record["startQL"] = quantized_start
-        record["durationQL"] = quantized_end - quantized_start
+    for group in _group_onsets(records):
+        representative_onset = statistics.median(
+            record["startQL"] for record in group
+        )
+        quantized_start = round(representative_onset / step) * step
+        for record in group:
+            quantized_duration = round(record["durationQL"] / step) * step
+            if quantized_duration <= 0:
+                quantized_duration = step
+            record["startQL"] = quantized_start
+            record["durationQL"] = quantized_duration
 
     records.sort(key=lambda item: (item["startQL"], item["pitch"]))
     return subdivisions, median_error, upper_error
@@ -201,30 +222,98 @@ def _hand_cost(pitch, hand, split_point, centers, previous_pitch, group_load):
     return cost
 
 
+def _infer_group_hand_boundary(group, split_point, low_center, high_center):
+    """Busca una separación amplia entre bajo y acorde/melodía simultáneos."""
+    pitches = sorted({record["pitch"] for record in group})
+    if len(pitches) < 2:
+        return None
+
+    candidates = []
+    for index in range(1, len(pitches)):
+        gap = pitches[index] - pitches[index - 1]
+        if gap < 12:
+            continue
+
+        low_median = statistics.median(pitches[:index])
+        high_median = statistics.median(pitches[index:])
+        if low_median > split_point - 8 or high_median < split_point - 8:
+            continue
+
+        direct_cost = abs(low_median - low_center) + abs(high_median - high_center)
+        reversed_cost = abs(low_median - high_center) + abs(high_median - low_center)
+        confidence = reversed_cost - direct_cost
+        if confidence < 5:
+            continue
+
+        # Favorece un hueco amplio y una división coherente con los centros
+        # de registro observados a lo largo de toda la pieza.
+        candidates.append((gap + confidence * 0.35, pitches[index]))
+
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
 def assign_hands(records, split_point, low_center, high_center):
-    """Asigna cada evento a una mano con registro y continuidad local."""
+    """Asigna el bajo a Fa y eleva acordes medios sobre un bajo recurrente."""
     centers = (low_center, high_center)
     hands = {"left": [], "right": []}
     previous_pitch = {"left": None, "right": None}
+    separated_groups = 0
+    midrange_chords_to_treble = 0
+    measure_length = _measure_length_from_environment() or 4.0
+    bass_measures = {
+        int(math.floor((record["startQL"] + 1e-7) / measure_length))
+        for record in records
+        if record["pitch"] <= 48
+    }
 
-    cursor = 0
-    while cursor < len(records):
-        group_start = records[cursor]["startQL"]
-        end = cursor + 1
-        while (
-            end < len(records)
-            and records[end]["startQL"] - group_start
-            <= ONSET_GROUP_TOLERANCE_QL
-        ):
-            end += 1
-
-        group = records[cursor:end]
+    for group in _group_onsets(records):
+        group_start = group[0]["startQL"]
         assignments = []
         group_load = Counter()
+        group_boundary = _infer_group_hand_boundary(
+            group,
+            split_point,
+            low_center,
+            high_center,
+        )
+        assigned_ids = set()
+        if group_boundary is not None:
+            separated_groups += 1
+            for record in group:
+                hand = "left" if record["pitch"] < group_boundary else "right"
+                assignments.append((record, hand))
+                assigned_ids.add(id(record))
+                group_load[hand] += 1
+        else:
+            measure_index = int(
+                math.floor((group_start + 1e-7) / measure_length)
+            )
+            midrange_pitches = sorted({
+                record["pitch"]
+                for record in group
+                if 55 <= record["pitch"] <= 72
+            })
+            is_supported_midrange_chord = (
+                measure_index in bass_measures
+                and len(midrange_pitches) >= 2
+                and midrange_pitches[-1] - midrange_pitches[0] >= 5
+                and statistics.median(midrange_pitches) >= 58
+            )
+            if is_supported_midrange_chord:
+                midrange_chords_to_treble += 1
+                for record in group:
+                    if 55 <= record["pitch"] <= 72:
+                        assignments.append((record, "right"))
+                        assigned_ids.add(id(record))
+                        group_load["right"] += 1
 
-        # Primero fija notas cuyo registro queda claramente de un lado.
+        # Fija los registros claros; reserva solo la zona media para continuidad.
         ambiguous = []
         for record in group:
+            if id(record) in assigned_ids:
+                continue
             pitch = record["pitch"]
             if pitch < split_point - AMBIGUOUS_SEMITONES:
                 assignments.append((record, "left"))
@@ -253,7 +342,7 @@ def assign_hands(records, split_point, low_center, high_center):
                 previous_pitch["right"],
                 group_load,
             )
-            hand = "left" if left_cost <= right_cost else "right"
+            hand = "right" if right_cost <= left_cost else "left"
             assignments.append((record, hand))
             group_load[hand] += 1
 
@@ -267,30 +356,280 @@ def assign_hands(records, split_point, low_center, high_center):
                 if assigned_hand == hand
             ]
             if assigned_pitches:
-                # La mediana del grupo sirve como referencia para las notas
-                # fronterizas del siguiente ataque.
                 assigned_pitches.sort()
                 previous_pitch[hand] = assigned_pitches[
                     len(assigned_pitches) // 2
                 ]
 
-        cursor = end
-
+    print("GRUPOS SEPARADOS POR SALTO DE ALTURA:", separated_groups)
+    print("ACORDES MEDIOS ASIGNADOS A SOL POR PATRÓN DE BAJO:", midrange_chords_to_treble)
     return hands
 
 
-def _insert_notatable_note(target_part, record):
-    """Inserta una nota y divide su duración compleja conservando ligaduras."""
-    source_note = note.Note(record["pitchObject"])
-    source_note.volume.velocity = record["velocity"]
-    source_note.duration = duration.Duration(
-        quarterLength=record["durationQL"]
+def infer_notated_durations(hands, subdivisions):
+    """Regulariza duraciones por mano según el espacio hasta el siguiente ataque."""
+    step = 1.0 / subdivisions
+    adjusted_events = 0
+
+    for records in hands.values():
+        groups = _group_onsets(records, tolerance=1e-6)
+        for index, group in enumerate(groups):
+            raw_duration = statistics.median(
+                record["durationQL"] for record in group
+            )
+            if index + 1 < len(groups):
+                next_onset = statistics.median(
+                    record["startQL"] for record in groups[index + 1]
+                )
+                gap = max(step, next_onset - group[0]["startQL"])
+                target_duration = min(gap, max(raw_duration, gap * 0.5))
+                target_duration = round(target_duration / step) * step
+                target_duration = min(gap, max(step, target_duration))
+            else:
+                target_duration = max(
+                    step,
+                    round(raw_duration / step) * step,
+                )
+
+            for record in group:
+                if abs(record["durationQL"] - target_duration) > 1e-6:
+                    adjusted_events += 1
+                record["durationQL"] = target_duration
+
+    print("DURACIONES REGULARIZADAS POR ESPACIADO:", adjusted_events)
+    return adjusted_events
+
+
+def _unit_quarter_length(tempo_unit):
+    unit_quarter_lengths = {
+        "eighth": 0.5,
+        "quarter": 1.0,
+        "dotted_quarter": 1.5,
+        "half": 2.0,
+    }
+    normalized_unit = (tempo_unit or "").strip().lower()
+    if normalized_unit not in unit_quarter_lengths:
+        raise ValueError(f"Unidad de tempo no soportada: {tempo_unit}")
+    return unit_quarter_lengths[normalized_unit]
+
+
+def _quarter_bpm_for_mark(mark):
+    """Obtiene negras por minuto a partir de una marca de tempo."""
+    try:
+        quarter_bpm = float(mark.getQuarterBPM())
+        if math.isfinite(quarter_bpm) and quarter_bpm > 0:
+            return quarter_bpm
+    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+        pass
+
+    try:
+        number = float(mark.number)
+        referent = getattr(mark, "referent", None)
+        referent_length = (
+            float(referent.quarterLength) if referent is not None else 1.0
+        )
+        quarter_bpm = number / referent_length
+        if math.isfinite(quarter_bpm) and quarter_bpm > 0:
+            return quarter_bpm
+    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+        pass
+    return None
+
+
+def source_tempo_quarter_bpm(source_score):
+    """Lee el tempo constante del MIDI; los MIDI de los motores usan 120."""
+    try:
+        flat_score = source_score.flatten()
+        marks = list(flat_score.getElementsByClass(tempo.MetronomeMark))
+    except (AttributeError, TypeError):
+        marks = []
+
+    tempo_points = {}
+    for mark in marks:
+        quarter_bpm = _quarter_bpm_for_mark(mark)
+        if quarter_bpm is None:
+            continue
+        try:
+            offset = float(mark.offset)
+        except (AttributeError, TypeError, ValueError):
+            offset = 0.0
+        tempo_points[round(offset, 6)] = quarter_bpm
+
+    if not tempo_points:
+        return 120.0, False, "predeterminado 120"
+
+    distinct_tempos = {round(value, 6) for value in tempo_points.values()}
+    if len(distinct_tempos) > 1:
+        return None, True, "MIDI con cambios de tempo"
+
+    return next(iter(tempo_points.values())), False, "MIDI"
+
+
+def normalize_records_to_tempo(records, source_score):
+    """Convierte la cuadrícula MIDI al tempo solicitado preservando segundos."""
+    tempo_value = os.environ.get("TEMPO_BPM")
+    tempo_unit = os.environ.get("TEMPO_UNIT")
+    if not tempo_value or not tempo_unit:
+        print("ESCALA TEMPORAL: sin cambio; tempo objetivo no configurado")
+        return
+
+    try:
+        bpm = float(tempo_value)
+        referent_length = _unit_quarter_length(tempo_unit)
+    except (TypeError, ValueError) as exc:
+        print("ESCALA TEMPORAL: sin cambio; configuración no válida", str(exc))
+        return
+
+    if not math.isfinite(bpm) or bpm <= 0:
+        print("ESCALA TEMPORAL: sin cambio; BPM no válido")
+        return
+
+    source_qpm, has_tempo_changes, source_label = (
+        source_tempo_quarter_bpm(source_score)
+    )
+    if has_tempo_changes:
+        print(
+            "ESCALA TEMPORAL: omitida; el MIDI tiene varios tempos y no se "
+            "puede aplicar una escala única sin alterar sus tiempos"
+        )
+        return
+
+    target_qpm = bpm / referent_length
+    if source_qpm is None or not math.isfinite(source_qpm) or source_qpm <= 0:
+        print("ESCALA TEMPORAL: omitida; no se pudo leer el tempo MIDI")
+        return
+
+    scale = target_qpm / source_qpm
+    for record in records:
+        record["startQL"] *= scale
+        record["durationQL"] *= scale
+
+    print(
+        "ESCALA TEMPORAL:",
+        f"{source_label} {source_qpm:.3f} negras/min ->",
+        f"objetivo {target_qpm:.3f} negras/min; factor {scale:.6f}",
     )
 
-    cursor = record["startQL"]
-    for piece in source_note.splitAtDurations():
-        target_part.insert(cursor, piece)
-        cursor += float(piece.duration.quarterLength)
+
+def trim_leading_full_measures(records):
+    """Quita compases completos de silencio sin mover la fase del primer ataque."""
+    numerator = os.environ.get("METER_NUMERATOR")
+    denominator = os.environ.get("METER_DENOMINATOR")
+    if not numerator or not denominator:
+        print("SILENCIO INICIAL: se conserva; compás no configurado")
+        return
+
+    try:
+        measure_length = int(numerator) * 4.0 / int(denominator)
+    except (TypeError, ValueError, ZeroDivisionError):
+        print("SILENCIO INICIAL: se conserva; compás no válido")
+        return
+
+    if not math.isfinite(measure_length) or measure_length <= 0:
+        print("SILENCIO INICIAL: se conserva; compás no válido")
+        return
+
+    first_onset = min(record["startQL"] for record in records)
+    measures_to_trim = int(math.floor((first_onset + 1e-7) / measure_length))
+    if measures_to_trim <= 0:
+        print("SILENCIO INICIAL: menos de un compás completo; se conserva")
+        return
+
+    amount = measures_to_trim * measure_length
+    for record in records:
+        record["startQL"] = max(0.0, record["startQL"] - amount)
+
+    print(
+        "SILENCIO INICIAL:",
+        f"se quitaron {measures_to_trim} compases completos",
+        "y se conservó la posición del ataque dentro del compás",
+    )
+
+
+def _insert_notatable_events(target_part, records):
+    """Escribe cada ataque como nota o acorde, sin voces duplicadas."""
+    for group in _group_onsets(records, tolerance=1e-6):
+        start = group[0]["startQL"]
+        duration_ql = statistics.median(
+            record["durationQL"] for record in group
+        )
+        pitches = {}
+        for record in group:
+            pitches.setdefault(record["pitch"], record)
+        unique_records = [pitches[pitch] for pitch in sorted(pitches)]
+
+        if len(unique_records) == 1:
+            event = note.Note(unique_records[0]["pitchObject"])
+            event.volume.velocity = unique_records[0]["velocity"]
+        else:
+            event = chord.Chord([
+                record["pitchObject"] for record in unique_records
+            ])
+            for event_note, record in zip(event.notes, unique_records):
+                event_note.volume.velocity = record["velocity"]
+
+        event.duration = duration.Duration(quarterLength=duration_ql)
+        target_part.insert(start, event)
+
+
+def _measure_length_from_environment():
+    numerator = os.environ.get("METER_NUMERATOR")
+    denominator = os.environ.get("METER_DENOMINATOR")
+    if not numerator or not denominator:
+        return None
+    try:
+        measure_length = int(numerator) * 4.0 / int(denominator)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return measure_length if math.isfinite(measure_length) and measure_length > 0 else None
+
+
+def _merged_activity_intervals(records):
+    intervals = sorted(
+        (record["startQL"], record["startQL"] + record["durationQL"])
+        for record in records
+    )
+    merged = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1] + 1e-7:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return merged
+
+
+def _insert_rest_gap(target_part, start, end, measure_length):
+    cursor = start
+    while cursor < end - 1e-7:
+        next_bar = (
+            math.floor((cursor + 1e-7) / measure_length) + 1
+        ) * measure_length
+        segment_end = min(end, next_bar)
+        segment_length = segment_end - cursor
+        starts_at_bar = (
+            abs(cursor - round(cursor / measure_length) * measure_length) < 1e-6
+        )
+        is_full_measure = (
+            starts_at_bar
+            and abs(segment_length - measure_length) < 1e-6
+        )
+        if not is_full_measure:
+            rest = note.Rest()
+            rest.duration = duration.Duration(quarterLength=segment_length)
+            target_part.insert(cursor, rest)
+        cursor = segment_end
+
+
+def fill_silent_gaps(target_part, records, total_end, measure_length):
+    """Inserta silencios simples en huecos parciales y conserva compases vacíos."""
+    intervals = _merged_activity_intervals(records)
+    cursor = 0.0
+    for start, end in intervals:
+        if start > cursor + 1e-7:
+            _insert_rest_gap(target_part, cursor, start, measure_length)
+        cursor = max(cursor, end)
+    if total_end > cursor + 1e-7:
+        _insert_rest_gap(target_part, cursor, total_end, measure_length)
 
 
 def build_grand_staff(hands):
@@ -305,10 +644,23 @@ def build_grand_staff(hands):
     right_staff.insert(0, clef.TrebleClef())
     left_staff.insert(0, clef.BassClef())
 
-    for record in hands["right"]:
-        _insert_notatable_note(right_staff, record)
-    for record in hands["left"]:
-        _insert_notatable_note(left_staff, record)
+    _insert_notatable_events(right_staff, hands["right"])
+    _insert_notatable_events(left_staff, hands["left"])
+
+    measure_length = _measure_length_from_environment()
+    if measure_length is not None:
+        all_records = hands["right"] + hands["left"]
+        final_offset = max(
+            record["startQL"] + record["durationQL"]
+            for record in all_records
+        )
+        measure_count = max(
+            1,
+            int(math.ceil((final_offset - 1e-7) / measure_length)),
+        )
+        total_end = measure_count * measure_length
+        fill_silent_gaps(right_staff, hands["right"], total_end, measure_length)
+        fill_silent_gaps(left_staff, hands["left"], total_end, measure_length)
 
     score.insert(0, right_staff)
     score.insert(0, left_staff)
@@ -370,16 +722,7 @@ def apply_tempo(score):
         return
 
     tempo_unit = tempo_unit_value.strip().lower()
-    unit_quarter_lengths = {
-        "eighth": 0.5,
-        "quarter": 1.0,
-        "dotted_quarter": 1.5,
-        "half": 2.0,
-    }
-    if tempo_unit not in unit_quarter_lengths:
-        raise ValueError(f"Unidad de tempo no soportada: {tempo_unit}")
-
-    referent_length = unit_quarter_lengths[tempo_unit]
+    referent_length = _unit_quarter_length(tempo_unit)
     for index, part in enumerate(score.parts):
         remove_elements_from_stream(part, tempo.MetronomeMark)
         # Una sola indicación de tempo en el pentagrama superior evita que
@@ -401,6 +744,8 @@ def main():
     if not records:
         raise ValueError("El MIDI no contiene notas con altura definida.")
 
+    normalize_records_to_tempo(records, imported_score)
+    trim_leading_full_measures(records)
     subdivisions, median_error, upper_error = quantize_records(records)
 
     split_point, low_center, high_center = estimate_hand_split(records)
@@ -410,6 +755,7 @@ def main():
         low_center,
         high_center,
     )
+    infer_notated_durations(hands, subdivisions)
     score = build_grand_staff(hands)
 
     print("MIDI_INPUT:", MIDI_INPUT)
