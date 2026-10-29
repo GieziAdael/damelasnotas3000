@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Diagnostics;
+using Microsoft.Maui.ApplicationModel;
+using Microsoft.Maui.Dispatching;
 using Damelasnotas3000.Models;
 using Damelasnotas3000.Services;
 using Damelasnotas3000.Services.MidiCleanup;
@@ -21,6 +23,12 @@ public partial class MainPage : ContentPage
     private readonly MidiPlaybackService _midiPlaybackService = new();
     private readonly MusicAnalysisService _musicAnalysisService;
     private readonly MidiCleanupService _midiCleanupService;
+    private readonly IDispatcherTimer _playbackUiTimer;
+    private double _scoreQuarterLengthScale = 1.0;
+    private double _trimmedScoreQuarterLengths;
+    private double _scoreOnsetOriginCorrectionQL;
+    private int _scoreQuantizationSubdivisions = 1;
+    private bool _cursorUpdatePending;
 
     public MainPage()
     {
@@ -33,6 +41,12 @@ public partial class MainPage : ContentPage
         _musicXmlService = new MidiToMusicXmlService();
         _musicAnalysisService = new MusicAnalysisService();
         _midiCleanupService = new MidiCleanupService();
+
+        _playbackUiTimer = Dispatcher.CreateTimer();
+        _playbackUiTimer.Interval = TimeSpan.FromMilliseconds(50);
+        _playbackUiTimer.IsRepeating = true;
+        _playbackUiTimer.Tick += OnPlaybackUiTimerTick;
+        _midiPlaybackService.PlaybackFailed += OnMidiPlaybackFailed;
     }
 
     private (int? Numerator, int? Denominator) ReadMeterOverride()
@@ -321,6 +335,9 @@ public partial class MainPage : ContentPage
 
         try
         {
+            await _midiPlaybackService.PauseAsync();
+            _playbackUiTimer.Stop();
+
             // Lee los ajustes antes de iniciar las tareas de análisis y limpieza.
             var (meterNumeratorOverride, meterDenominatorOverride) =
                 ReadMeterOverride();
@@ -410,6 +427,7 @@ public partial class MainPage : ContentPage
             string engineLabel = useBasicPitch ? "Basic Pitch" : "Magenta";
 
             _midiFilePath = midiPath;
+            RefreshPlaybackControls();
 
             RecordingStatus.Text = $"Analizando el MIDI de {engineLabel}...";
 
@@ -645,7 +663,7 @@ public partial class MainPage : ContentPage
             RecordingStatus.Text =
                 $"Análisis completado.{Environment.NewLine}{analysisSummary}";
 
-            string musicXmlPath =
+            MusicXmlConversionResult conversionResult =
                 await _musicXmlService.ConvertAsync(
                     cleanedMidiPath,
                     outputDirectory,
@@ -654,6 +672,20 @@ public partial class MainPage : ContentPage
                     meterDenominatorOverride,
                     tempoOverride,
                     tempoUnitOverride);
+            string musicXmlPath = conversionResult.MusicXmlPath;
+            _scoreQuarterLengthScale =
+                conversionResult.TimingMap.QuarterLengthScale;
+            _trimmedScoreQuarterLengths =
+                conversionResult.TimingMap.TrimmedQuarterLengths;
+            _scoreOnsetOriginCorrectionQL =
+                conversionResult.TimingMap.OnsetOriginCorrectionQL
+                    .GetValueOrDefault();
+            _scoreQuantizationSubdivisions =
+                conversionResult.TimingMap.QuantizationSubdivisions;
+
+            await _midiPlaybackService.LoadAsync(cleanedMidiPath);
+            RefreshPlaybackControls();
+            RefreshPlaybackTimeLabel();
 
             string scoreViewerDirectory = Path.Combine(
                 FileSystem.AppDataDirectory,
@@ -668,6 +700,7 @@ public partial class MainPage : ContentPage
             File.Copy(musicXmlPath, viewerMusicXmlPath, overwrite: true);
 
             await LoadScoreViewerAsync("grabacion.musicxml");
+            await RefreshPlaybackPositionAsync();
 
             RecordingStatus.Text =
                 $"Transcripción completada.{Environment.NewLine}{analysisSummary}";
@@ -702,9 +735,7 @@ public partial class MainPage : ContentPage
                 !string.IsNullOrWhiteSpace(_audioFilePath) &&
                 File.Exists(_audioFilePath);
 
-            PlayButton.IsEnabled =
-                !string.IsNullOrWhiteSpace(_midiFilePath) &&
-                File.Exists(_midiFilePath);
+            RefreshPlaybackControls();
         }
 #else
     await DisplayAlertAsync(
@@ -847,6 +878,7 @@ public partial class MainPage : ContentPage
                     $"?file={Uri.EscapeDataString(fileName)}" +
                     $"&t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"
             };
+
 #endif
 
         }
@@ -855,7 +887,6 @@ public partial class MainPage : ContentPage
             ////DebugStatus.Text = $"Error: {ex.Message}";
         }
     }
-
 
     /// <summary>
     /// Solo carga la partitura de ejemplo al abrir la página. Despues carga la grabacion.
@@ -889,39 +920,190 @@ public partial class MainPage : ContentPage
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(_midiFilePath))
+            if (!CanControlPlayback())
             {
-                await DisplayAlertAsync("MIDI", "Primero graba y convierte el audio.", "Aceptar");
+                await DisplayAlertAsync(
+                    "MIDI",
+                    "Primero convierte el audio para cargar la partitura.",
+                    "Aceptar");
                 return;
             }
 
-            PlayButton.IsEnabled = false;
-            StopPlaybackButton.IsEnabled = true;
-
-            await _midiPlaybackService.PlayAsync(_midiFilePath);
+            await _midiPlaybackService.PlayAsync();
+            _playbackUiTimer.Start();
+            RefreshPlaybackControls();
         }
         catch (Exception ex)
         {
             await DisplayAlertAsync("Error de reproducción", ex.Message, "Aceptar");
         }
-        finally
-        {
-            PlayButton.IsEnabled =
-                !string.IsNullOrWhiteSpace(_midiFilePath) &&
-                File.Exists(_midiFilePath);
+    }
 
-            StopPlaybackButton.IsEnabled = false;
+    private async void OnPausePlaybackClicked(object sender, EventArgs e)
+    {
+        await _midiPlaybackService.PauseAsync();
+        _playbackUiTimer.Stop();
+        await RefreshPlaybackPositionAsync();
+        RefreshPlaybackControls();
+    }
+
+    private async void OnRestartPlaybackClicked(object sender, EventArgs e)
+    {
+        try
+        {
+            await _midiPlaybackService.RestartAsync();
+            _playbackUiTimer.Start();
+            RefreshPlaybackControls();
+            await RefreshPlaybackPositionAsync();
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlertAsync("Error de reproducción", ex.Message, "Aceptar");
         }
     }
 
-    /// <summary>
-    /// Boton de Stop
-    /// </summary>
-    /// <param name="sender"></param>
-    /// <param name="e"></param>
-    private void OnStopPlaybackClicked(object sender, EventArgs e)
+    private async void OnSeekBackClicked(object sender, EventArgs e)
     {
-        _midiPlaybackService.Stop();
+        await SeekPlaybackAsync(-10);
+    }
+
+    private async void OnSeekForwardClicked(object sender, EventArgs e)
+    {
+        await SeekPlaybackAsync(10);
+    }
+
+    private async void OnEndPlaybackClicked(object sender, EventArgs e)
+    {
+        await _midiPlaybackService.GoToEndAsync();
+        _playbackUiTimer.Stop();
+        await RefreshPlaybackPositionAsync();
+        RefreshPlaybackControls();
+    }
+
+    private async Task SeekPlaybackAsync(double seconds)
+    {
+        await _midiPlaybackService.SeekByAsync(seconds);
+        if (_midiPlaybackService.IsPlaying)
+            _playbackUiTimer.Start();
+        else
+            _playbackUiTimer.Stop();
+
+        await RefreshPlaybackPositionAsync();
+        RefreshPlaybackControls();
+    }
+
+    private async void OnPlaybackUiTimerTick(object? sender, EventArgs e)
+    {
+        if (_cursorUpdatePending)
+            return;
+
+        _cursorUpdatePending = true;
+        try
+        {
+            RefreshPlaybackTimeLabel();
+            await UpdateScoreCursorAsync();
+
+            if (!_midiPlaybackService.IsPlaying)
+            {
+                _playbackUiTimer.Stop();
+                RefreshPlaybackControls();
+            }
+        }
+        finally
+        {
+            _cursorUpdatePending = false;
+        }
+    }
+
+    private bool CanControlPlayback()
+    {
+        return _midiPlaybackService.HasLoadedMidi &&
+            string.Equals(
+                _midiPlaybackService.LoadedMidiPath,
+                _midiFilePath,
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void RefreshPlaybackControls()
+    {
+        bool loaded = CanControlPlayback();
+        bool playing = loaded && _midiPlaybackService.IsPlaying;
+
+        RestartPlaybackButton.IsEnabled = loaded;
+        SeekBackButton.IsEnabled = loaded;
+        PlayButton.IsEnabled = loaded && !playing;
+        PausePlaybackButton.IsEnabled = playing;
+        SeekForwardButton.IsEnabled = loaded;
+        EndPlaybackButton.IsEnabled = loaded;
+    }
+
+    private void RefreshPlaybackTimeLabel()
+    {
+        static string FormatTime(double seconds)
+        {
+            TimeSpan value = TimeSpan.FromSeconds(Math.Max(0, seconds));
+            return $"{(int)value.TotalMinutes:00}:{value.Seconds:00}";
+        }
+
+        PlaybackTimeLabel.Text =
+            $"{FormatTime(_midiPlaybackService.PositionSeconds)} / " +
+            FormatTime(_midiPlaybackService.DurationSeconds);
+    }
+
+    private async Task RefreshPlaybackPositionAsync()
+    {
+        RefreshPlaybackTimeLabel();
+        await UpdateScoreCursorAsync();
+    }
+
+    private async Task UpdateScoreCursorAsync()
+    {
+        if (!CanControlPlayback() ||
+            _midiPlaybackService.TicksPerQuarterNote <= 0)
+        {
+            return;
+        }
+
+        double sourceQuarterLength =
+            _midiPlaybackService.PositionTicks /
+            (double)_midiPlaybackService.TicksPerQuarterNote;
+        double scoreQuarterLength = Math.Max(
+            0,
+            sourceQuarterLength * _scoreQuarterLengthScale -
+            _trimmedScoreQuarterLengths -
+            _scoreOnsetOriginCorrectionQL);
+        scoreQuarterLength = Math.Round(
+            scoreQuarterLength * _scoreQuantizationSubdivisions,
+            MidpointRounding.ToEven) /
+            _scoreQuantizationSubdivisions;
+
+        string script =
+            "window.setPlaybackScorePosition && " +
+            $"window.setPlaybackScorePosition({scoreQuarterLength.ToString("R", CultureInfo.InvariantCulture)});";
+
+        try
+        {
+            await ScoreWebView.EvaluateJavaScriptAsync(script);
+        }
+        catch (Exception exception)
+        {
+            Debug.WriteLine(
+                "No se pudo actualizar el cursor de la partitura: " +
+                exception.Message);
+        }
+    }
+
+    private void OnMidiPlaybackFailed(Exception exception)
+    {
+        MainThread.BeginInvokeOnMainThread(async () =>
+        {
+            _playbackUiTimer.Stop();
+            RefreshPlaybackControls();
+            await DisplayAlertAsync(
+                "Error de reproducción",
+                exception.Message,
+                "Aceptar");
+        });
     }
 
     private async Task CheckMidiDevicesAsync()

@@ -133,34 +133,70 @@
 
 
             <Label Text="Reproducción"
-       FontSize="22"
-       FontAttributes="Bold" />
+                   FontSize="22"
+                   FontAttributes="Bold" />
 
-            <HorizontalStackLayout
-    Spacing="15"
-    HorizontalOptions="Center">
+            <Label x:Name="PlaybackTimeLabel"
+                   Text="00:00 / 00:00"
+                   FontSize="15"
+                   HorizontalOptions="Center" />
 
-                <Button
-        x:Name="PlayButton"
-        Text="▶ Play"
-        Clicked="OnPlayClicked"
-        IsEnabled="True"
-        BackgroundColor="#2E7D32"
-        TextColor="White"
-        WidthRequest="140"
-        HeightRequest="55" />
+            <FlexLayout Direction="Row"
+                        Wrap="Wrap"
+                        JustifyContent="Center"
+                        AlignItems="Center">
+                <Button x:Name="RestartPlaybackButton"
+                        Text="↺ Reiniciar"
+                        Clicked="OnRestartPlaybackClicked"
+                        IsEnabled="False"
+                        WidthRequest="112"
+                        HeightRequest="48"
+                        Margin="4" />
 
-                <Button
-        x:Name="StopPlaybackButton"
-        Text="■ Stop"
-        Clicked="OnStopPlaybackClicked"
-        IsEnabled="False"
-        BackgroundColor="#424242"
-        TextColor="White"
-        WidthRequest="140"
-        HeightRequest="55" />
+                <Button x:Name="SeekBackButton"
+                        Text="−10 s"
+                        Clicked="OnSeekBackClicked"
+                        IsEnabled="False"
+                        WidthRequest="88"
+                        HeightRequest="48"
+                        Margin="4" />
 
-            </HorizontalStackLayout>
+                <Button x:Name="PlayButton"
+                        Text="▶ Play"
+                        Clicked="OnPlayClicked"
+                        IsEnabled="False"
+                        BackgroundColor="#2E7D32"
+                        TextColor="White"
+                        WidthRequest="100"
+                        HeightRequest="48"
+                        Margin="4" />
+
+                <Button x:Name="PausePlaybackButton"
+                        Text="Ⅱ Pausa"
+                        Clicked="OnPausePlaybackClicked"
+                        IsEnabled="False"
+                        BackgroundColor="#424242"
+                        TextColor="White"
+                        WidthRequest="100"
+                        HeightRequest="48"
+                        Margin="4" />
+
+                <Button x:Name="SeekForwardButton"
+                        Text="+10 s"
+                        Clicked="OnSeekForwardClicked"
+                        IsEnabled="False"
+                        WidthRequest="88"
+                        HeightRequest="48"
+                        Margin="4" />
+
+                <Button x:Name="EndPlaybackButton"
+                        Text="Fin ⏭"
+                        Clicked="OnEndPlaybackClicked"
+                        IsEnabled="False"
+                        WidthRequest="88"
+                        HeightRequest="48"
+                        Margin="4" />
+            </FlexLayout>
 
 
             <WebView

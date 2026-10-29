@@ -1,12 +1,13 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using Damelasnotas3000.Models;
 
 namespace Damelasnotas3000.Services;
 
 public class MidiToMusicXmlService
 {
-    public async Task<string> ConvertAsync(
+    public async Task<MusicXmlConversionResult> ConvertAsync(
         string midiFilePath,
         string outputDirectory,
         MusicAnalysisResult analysis,
@@ -82,6 +83,9 @@ public class MidiToMusicXmlService
         string musicXmlPath = Path.Combine(
             outputDirectory,
             "grabacion.musicxml");
+        string timingMapPath = Path.Combine(
+            outputDirectory,
+            "score_timing_map.json");
 
         string scriptPath = Path.Combine(
             outputDirectory,
@@ -110,6 +114,7 @@ public class MidiToMusicXmlService
             converterPackagesDirectory;
         startInfo.Environment["MIDI_INPUT"] = midiFilePath;
         startInfo.Environment["XML_OUTPUT"] = musicXmlPath;
+        startInfo.Environment["TIMING_MAP_OUTPUT"] = timingMapPath;
 
         int? meterNumerator =
             meterNumeratorOverride ?? analysis.TimeSignatureNumerator;
@@ -166,10 +171,47 @@ public class MidiToMusicXmlService
                 $"{Environment.NewLine}{stdout}");
         }
 
-        return musicXmlPath;
+        if (!File.Exists(timingMapPath))
+        {
+            throw new InvalidOperationException(
+                "El conversor no generó el mapa de sincronización de la partitura.");
+        }
+
+        await using FileStream timingMapStream = File.OpenRead(timingMapPath);
+        ScoreTimingMap? timingMap = await JsonSerializer.DeserializeAsync<ScoreTimingMap>(
+            timingMapStream,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+        if (timingMap is null ||
+            !double.IsFinite(timingMap.QuarterLengthScale) ||
+            timingMap.QuarterLengthScale <= 0 ||
+            !double.IsFinite(timingMap.TrimmedQuarterLengths) ||
+            timingMap.TrimmedQuarterLengths < 0 ||
+            (timingMap.OnsetOriginCorrectionQL is double onsetCorrection &&
+             (!double.IsFinite(onsetCorrection) || onsetCorrection < 0)) ||
+            timingMap.QuantizationSubdivisions is not (1 or 2 or 3 or 4 or 6 or 8))
+        {
+            throw new InvalidOperationException(
+                "El mapa de sincronización de la partitura no es válido.");
+        }
+
+        return new MusicXmlConversionResult(musicXmlPath, timingMap);
 #else
         throw new PlatformNotSupportedException(
             "La conversión local está configurada para Windows.");
 #endif
     }
 }
+
+public sealed record ScoreTimingMap(
+    double QuarterLengthScale,
+    double TrimmedQuarterLengths,
+    int QuantizationSubdivisions,
+    double? OnsetOriginCorrectionQL = null);
+
+public sealed record MusicXmlConversionResult(
+    string MusicXmlPath,
+    ScoreTimingMap TimingMap);

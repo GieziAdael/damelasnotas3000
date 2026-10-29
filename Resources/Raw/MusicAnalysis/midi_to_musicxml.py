@@ -1,5 +1,6 @@
 """Exporta el MIDI de piano como un gran pentagrama de Sol y Fa."""
 import copy
+import json
 import math
 import os
 import statistics
@@ -27,9 +28,10 @@ MAX_SPLIT_POINT = 72  # C5
 DEFAULT_SPLIT_POINT = 60  # C4
 AMBIGUOUS_SEMITONES = 4
 ONSET_GROUP_TOLERANCE_QL = 0.06
-# La grabación no aporta evidencia fiable para tuplets. Se mantiene una
-# cuadrícula binaria legible, hasta semicorcheas.
-RHYTHMIC_SUBDIVISIONS = (1, 2, 4)
+# Incluye subdivisiones binarias y ternarias. La penalización por complejidad
+# conserva la notación más sencilla que explique los ataques.
+RHYTHMIC_SUBDIVISIONS = (1, 2, 3, 4, 6, 8)
+MAX_INITIAL_ONSET_COMPENSATION_QL = 0.125
 
 
 def weighted_mean(values):
@@ -149,48 +151,69 @@ def _group_onsets(records, tolerance=None):
 
 
 def estimate_rhythmic_grid(records):
-    """Elige la cuadrícula binaria más sencilla que explica los ataques.
+    """Elige la cuadrícula más sencilla que explica casi todos los ataques.
 
     Los ataques casi simultáneos se miden como un solo grupo: el retraso de una
     nota dentro de un acorde no debe obligar a usar una cuadrícula más fina.
+    Un pequeño desfase inicial se trata como latencia de transcripción. Los
+    ataques fuera de cuadrícula cuentan en el error para que una mediana sola
+    no los oculte.
     """
     onsets = [
         statistics.median(record["startQL"] for record in group)
         for group in _group_onsets(records)
     ]
     if len(onsets) < 3:
-        return 4, 0.0, 0.0
+        return 4, 0.0, 0.0, 0.0
+
+    # Magenta puede situar el primer ataque unos cuadros después del pulso.
+    # Solo se compensa un desfase pequeño cerca de cero; un retraso mayor puede
+    # ser una anacrusa o un silencio inicial real y no debe eliminarse.
+    first_onset = onsets[0]
+    origin = (
+        first_onset
+        if 0.0 < first_onset <= MAX_INITIAL_ONSET_COMPENSATION_QL
+        else 0.0
+    )
+    relative_onsets = [onset - origin for onset in onsets]
 
     candidates = []
     for subdivisions in RHYTHMIC_SUBDIVISIONS:
         step = 1.0 / subdivisions
         errors = [
             abs(onset - round(onset / step) * step)
-            for onset in onsets
+            for onset in relative_onsets
         ]
-        median_error = statistics.median(errors)
-        upper_error = _percentile(errors, 0.85)
+        mean_error = statistics.mean(errors)
+        upper_error = _percentile(errors, 0.95)
 
-        # Si dos cuadrículas explican los ataques de forma parecida, preferir
-        # la que genera menos figuras pequeñas.
+        # El percentil 95 considera las síncopas minoritarias; la penalización
+        # sigue prefiriendo una escritura sencilla cuando el ajuste es similar.
         complexity_cost = 0.012 * math.log2(subdivisions)
-        score = median_error + 0.35 * upper_error + complexity_cost
-        candidates.append((score, subdivisions, median_error, upper_error))
+        score = mean_error + 0.35 * upper_error + complexity_cost
+        candidates.append((score, subdivisions, mean_error, upper_error))
 
-    _, subdivisions, median_error, upper_error = min(candidates)
-    return subdivisions, median_error, upper_error
+    _, subdivisions, mean_error, upper_error = min(candidates)
+    return subdivisions, mean_error, upper_error, origin
 
 
 def quantize_records(records):
     """Alinea grupos de ataques y duraciones a una cuadrícula común."""
-    subdivisions, median_error, upper_error = estimate_rhythmic_grid(records)
+    (
+        subdivisions,
+        mean_error,
+        upper_error,
+        origin,
+    ) = estimate_rhythmic_grid(records)
     step = 1.0 / subdivisions
 
     for group in _group_onsets(records):
         representative_onset = statistics.median(
             record["startQL"] for record in group
         )
-        quantized_start = round(representative_onset / step) * step
+        quantized_start = round(
+            (representative_onset - origin) / step
+        ) * step
         for record in group:
             quantized_duration = round(record["durationQL"] / step) * step
             if quantized_duration <= 0:
@@ -199,7 +222,7 @@ def quantize_records(records):
             record["durationQL"] = quantized_duration
 
     records.sort(key=lambda item: (item["startQL"], item["pitch"]))
-    return subdivisions, median_error, upper_error
+    return subdivisions, mean_error, upper_error, origin
 
 
 def _hand_cost(pitch, hand, split_point, centers, previous_pitch, group_load):
@@ -254,14 +277,93 @@ def _infer_group_hand_boundary(group, split_point, low_center, high_center):
     return max(candidates)[1]
 
 
+def _find_repeated_waltz_accompaniment_groups(records, measure_length):
+    """Detecta acordes repetidos tras el bajo inicial de un vals en 3/4."""
+    if (
+        os.environ.get("METER_NUMERATOR") != "3"
+        or os.environ.get("METER_DENOMINATOR") != "4"
+    ):
+        return set()
+
+    groups = _group_onsets(records)
+    bass_downbeat_measures = set()
+    for group in groups:
+        group_start = statistics.median(
+            record["startQL"] for record in group
+        )
+        measure_index = int(
+            math.floor((group_start + 1e-7) / measure_length)
+        )
+        measure_offset = group_start - measure_index * measure_length
+        if (
+            measure_offset <= 0.25 + 1e-7
+            and any(record["pitch"] <= 48 for record in group)
+        ):
+            bass_downbeat_measures.add(measure_index)
+
+    candidates = []
+    measures_by_slot = {}
+    for group in groups:
+        group_start = statistics.median(
+            record["startQL"] for record in group
+        )
+        measure_index = int(
+            math.floor((group_start + 1e-7) / measure_length)
+        )
+        if measure_index not in bass_downbeat_measures:
+            continue
+
+        measure_offset = group_start - measure_index * measure_length
+        if measure_offset <= 0.25 + 1e-7:
+            continue
+        # El MIDI ya está cuantizado como máximo a semicorcheas. Reconoce
+        # posiciones repetidas aunque el acorde caiga entre pulsos principales.
+        slot = round(measure_offset * 4) / 4.0
+
+        chord_pitches = sorted({
+            record["pitch"]
+            for record in group
+            if 55 <= record["pitch"] <= 65
+        })
+        if (
+            len(chord_pitches) < 2
+            or chord_pitches[-1] - chord_pitches[0] < 5
+            or statistics.median(chord_pitches) < 58
+        ):
+            continue
+
+        candidates.append((id(group[0]), slot, measure_index))
+        measures_by_slot.setdefault(slot, set()).add(measure_index)
+
+    # Un patrón de acompañamiento se acepta solo si reaparece en al menos tres
+    # compases con bajo en el primer pulso; no depende de un único ritmo fijo.
+    repeated_slots = {
+        slot
+        for slot, measure_indices in measures_by_slot.items()
+        if len(measure_indices) >= 3
+    }
+
+    return {
+        group_id
+        for group_id, slot, _ in candidates
+        if slot in repeated_slots
+    }
+
+
 def assign_hands(records, split_point, low_center, high_center):
-    """Asigna el bajo a Fa y eleva acordes medios sobre un bajo recurrente."""
+    """Asigna el bajo y reconoce acompañamientos de vals repetidos."""
     centers = (low_center, high_center)
     hands = {"left": [], "right": []}
     previous_pitch = {"left": None, "right": None}
     separated_groups = 0
     midrange_chords_to_treble = 0
+    waltz_groups_to_bass = 0
+    waltz_tones_to_bass = 0
     measure_length = _measure_length_from_environment() or 4.0
+    waltz_accompaniment_groups = _find_repeated_waltz_accompaniment_groups(
+        records,
+        measure_length,
+    )
     bass_measures = {
         int(math.floor((record["startQL"] + 1e-7) / measure_length))
         for record in records
@@ -272,6 +374,20 @@ def assign_hands(records, split_point, low_center, high_center):
         group_start = group[0]["startQL"]
         assignments = []
         group_load = Counter()
+        measure_index = int(
+            math.floor((group_start + 1e-7) / measure_length)
+        )
+        midrange_pitches = sorted({
+            record["pitch"]
+            for record in group
+            if 55 <= record["pitch"] <= 72
+        })
+        is_supported_midrange_chord = (
+            measure_index in bass_measures
+            and len(midrange_pitches) >= 2
+            and midrange_pitches[-1] - midrange_pitches[0] >= 5
+            and statistics.median(midrange_pitches) >= 58
+        )
         group_boundary = _infer_group_hand_boundary(
             group,
             split_point,
@@ -279,7 +395,23 @@ def assign_hands(records, split_point, low_center, high_center):
             high_center,
         )
         assigned_ids = set()
-        if group_boundary is not None:
+        is_waltz_accompaniment = (
+            id(group[0]) in waltz_accompaniment_groups
+            and is_supported_midrange_chord
+        )
+        if is_waltz_accompaniment:
+            # El acompañamiento reconocido tiene prioridad sobre la división
+            # genérica por salto: esa división separaba el bajo y dejaba el
+            # acorde completo en el pentagrama de Sol.
+            waltz_groups_to_bass += 1
+            for record in group:
+                hand = "left" if record["pitch"] <= 65 else "right"
+                assignments.append((record, hand))
+                assigned_ids.add(id(record))
+                group_load[hand] += 1
+                if hand == "left" and record["pitch"] >= 55:
+                    waltz_tones_to_bass += 1
+        elif group_boundary is not None:
             separated_groups += 1
             for record in group:
                 hand = "left" if record["pitch"] < group_boundary else "right"
@@ -287,20 +419,6 @@ def assign_hands(records, split_point, low_center, high_center):
                 assigned_ids.add(id(record))
                 group_load[hand] += 1
         else:
-            measure_index = int(
-                math.floor((group_start + 1e-7) / measure_length)
-            )
-            midrange_pitches = sorted({
-                record["pitch"]
-                for record in group
-                if 55 <= record["pitch"] <= 72
-            })
-            is_supported_midrange_chord = (
-                measure_index in bass_measures
-                and len(midrange_pitches) >= 2
-                and midrange_pitches[-1] - midrange_pitches[0] >= 5
-                and statistics.median(midrange_pitches) >= 58
-            )
             if is_supported_midrange_chord:
                 midrange_chords_to_treble += 1
                 for record in group:
@@ -362,6 +480,7 @@ def assign_hands(records, split_point, low_center, high_center):
                 ]
 
     print("GRUPOS SEPARADOS POR SALTO DE ALTURA:", separated_groups)
+    print("ACORDES REPETIDOS DE VALS EN FA:", waltz_groups_to_bass, "notas:", waltz_tones_to_bass)
     print("ACORDES MEDIOS ASIGNADOS A SOL POR PATRÓN DE BAJO:", midrange_chords_to_treble)
     return hands
 
@@ -471,18 +590,18 @@ def normalize_records_to_tempo(records, source_score):
     tempo_unit = os.environ.get("TEMPO_UNIT")
     if not tempo_value or not tempo_unit:
         print("ESCALA TEMPORAL: sin cambio; tempo objetivo no configurado")
-        return
+        return 1.0
 
     try:
         bpm = float(tempo_value)
         referent_length = _unit_quarter_length(tempo_unit)
     except (TypeError, ValueError) as exc:
         print("ESCALA TEMPORAL: sin cambio; configuración no válida", str(exc))
-        return
+        return 1.0
 
     if not math.isfinite(bpm) or bpm <= 0:
         print("ESCALA TEMPORAL: sin cambio; BPM no válido")
-        return
+        return 1.0
 
     source_qpm, has_tempo_changes, source_label = (
         source_tempo_quarter_bpm(source_score)
@@ -492,12 +611,12 @@ def normalize_records_to_tempo(records, source_score):
             "ESCALA TEMPORAL: omitida; el MIDI tiene varios tempos y no se "
             "puede aplicar una escala única sin alterar sus tiempos"
         )
-        return
+        return 1.0
 
     target_qpm = bpm / referent_length
     if source_qpm is None or not math.isfinite(source_qpm) or source_qpm <= 0:
         print("ESCALA TEMPORAL: omitida; no se pudo leer el tempo MIDI")
-        return
+        return 1.0
 
     scale = target_qpm / source_qpm
     for record in records:
@@ -509,6 +628,7 @@ def normalize_records_to_tempo(records, source_score):
         f"{source_label} {source_qpm:.3f} negras/min ->",
         f"objetivo {target_qpm:.3f} negras/min; factor {scale:.6f}",
     )
+    return scale
 
 
 def trim_leading_full_measures(records):
@@ -517,23 +637,23 @@ def trim_leading_full_measures(records):
     denominator = os.environ.get("METER_DENOMINATOR")
     if not numerator or not denominator:
         print("SILENCIO INICIAL: se conserva; compás no configurado")
-        return
+        return 0.0
 
     try:
         measure_length = int(numerator) * 4.0 / int(denominator)
     except (TypeError, ValueError, ZeroDivisionError):
         print("SILENCIO INICIAL: se conserva; compás no válido")
-        return
+        return 0.0
 
     if not math.isfinite(measure_length) or measure_length <= 0:
         print("SILENCIO INICIAL: se conserva; compás no válido")
-        return
+        return 0.0
 
     first_onset = min(record["startQL"] for record in records)
     measures_to_trim = int(math.floor((first_onset + 1e-7) / measure_length))
     if measures_to_trim <= 0:
         print("SILENCIO INICIAL: menos de un compás completo; se conserva")
-        return
+        return 0.0
 
     amount = measures_to_trim * measure_length
     for record in records:
@@ -544,6 +664,7 @@ def trim_leading_full_measures(records):
         f"se quitaron {measures_to_trim} compases completos",
         "y se conservó la posición del ataque dentro del compás",
     )
+    return amount
 
 
 def _insert_notatable_events(target_part, records):
@@ -739,14 +860,21 @@ def main():
     if not os.path.isfile(MIDI_INPUT):
         raise FileNotFoundError(f"No se encontró el MIDI: {MIDI_INPUT}")
 
-    imported_score = converter.parse(MIDI_INPUT)
+    # Conserva los tiempos originales del transcriptor. music21, de otro modo,
+    # aplica su propia cuantización antes de que este script estime la cuadrícula.
+    imported_score = converter.parse(MIDI_INPUT, quantizePost=False)
     records = extract_pitched_notes(imported_score)
     if not records:
         raise ValueError("El MIDI no contiene notas con altura definida.")
 
-    normalize_records_to_tempo(records, imported_score)
-    trim_leading_full_measures(records)
-    subdivisions, median_error, upper_error = quantize_records(records)
+    quarter_length_scale = normalize_records_to_tempo(
+        records,
+        imported_score,
+    )
+    trimmed_quarter_lengths = trim_leading_full_measures(records)
+    subdivisions, mean_error, upper_error, onset_origin_correction = (
+        quantize_records(records)
+    )
 
     split_point, low_center, high_center = estimate_hand_split(records)
     hands = assign_hands(
@@ -763,10 +891,12 @@ def main():
     print("CENTROS DE REGISTRO:", round(low_center, 1), round(high_center, 1))
     print(
         "CUADRÍCULA RÍTMICA:",
-        f"1/{subdivisions} de negra; error mediano",
-        round(median_error, 4),
-        "error p85",
+        f"1/{subdivisions} de negra; error medio",
+        round(mean_error, 4),
+        "error p95",
         round(upper_error, 4),
+        "corrección de ataque inicial",
+        round(onset_origin_correction, 4),
     )
     print("NOTAS MANO DERECHA / SOL:", len(hands["right"]))
     print("NOTAS MANO IZQUIERDA / FA:", len(hands["left"]))
@@ -784,6 +914,20 @@ def main():
             str(exc),
         )
         score.write("musicxml", fp=XML_OUTPUT, makeNotation=False)
+
+    timing_map_output = os.environ.get("TIMING_MAP_OUTPUT")
+    if timing_map_output:
+        with open(timing_map_output, "w", encoding="utf-8") as timing_map_file:
+            json.dump(
+                {
+                    "quarterLengthScale": quarter_length_scale,
+                    "trimmedQuarterLengths": trimmed_quarter_lengths,
+                    "quantizationSubdivisions": subdivisions,
+                    "onsetOriginCorrectionQL": onset_origin_correction,
+                },
+                timing_map_file,
+                ensure_ascii=False,
+            )
 
     print("XML_OUTPUT:", XML_OUTPUT)
 

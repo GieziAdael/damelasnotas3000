@@ -34,6 +34,36 @@
 
 
     <script>
+            let osmdInstance = null;
+            let playbackCursor = null;
+            let lastCursorQuarterLength = 0;
+            window.scoreViewerReady = false;
+
+            window.setPlaybackScorePosition = function (quarterLength) {
+                if (!osmdInstance || !playbackCursor ||
+                    !Number.isFinite(quarterLength)) {
+                    return;
+                }
+
+                const targetWholeNote = Math.max(0, quarterLength) / 4;
+                const iterator = playbackCursor.Iterator;
+
+                if (targetWholeNote + 0.000001 < lastCursorQuarterLength / 4) {
+                    playbackCursor.reset();
+                }
+
+                let safetyCounter = 0;
+                while (!iterator.endReached &&
+                    iterator.currentTimeStamp.realValue < targetWholeNote - 0.000001 &&
+                    safetyCounter < 100000) {
+                    playbackCursor.next();
+                    safetyCounter++;
+                }
+
+                playbackCursor.update();
+                lastCursorQuarterLength = quarterLength;
+            };
+
             console.log("OpenSheetMusicDisplay disponible:",
                 typeof window.opensheetmusicdisplay);
             async function loadScore() {
@@ -77,12 +107,27 @@
                         score,
                         {
                             autoResize: true,
-                            drawTitle: true
+                            drawTitle: true,
+                            cursorsOptions: [
+                                {
+                                    type: 1,
+                                    color: "#e53935",
+                                    alpha: 0.9,
+                                    follow: true
+                                }
+                            ]
                         }
                     );
 
+                    osmdInstance = osmd;
                     await osmd.load(musicXml);
                     osmd.render();
+                    osmd.enableOrDisableCursors(true);
+                    playbackCursor = osmd.cursor;
+                    playbackCursor.reset();
+                    playbackCursor.show();
+                    lastCursorQuarterLength = 0;
+                    window.scoreViewerReady = true;
 
                     // status.textContent = "Partitura cargada correctamente.";
                 } catch (error) {
@@ -92,6 +137,7 @@
 
                     status.textContent =
                         "Error al cargar la partitura: " + message;
+                    window.scoreViewerReady = false;
 
                     console.error(error);
                 }
