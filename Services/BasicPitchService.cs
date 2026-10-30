@@ -61,6 +61,13 @@ public sealed class BasicPitchService
             startInfo,
             TranscriptionTimeout);
 
+        await AnalysisDebugLog.AppendProcessOutputAsync(
+            outputDirectory,
+            "BASIC PITCH: TRANSCRIPCIÓN",
+            output.ExitCode,
+            output.StandardOutput,
+            output.StandardError);
+
         Debug.WriteLine("Transcripción Basic Pitch:");
         Debug.WriteLine(output.StandardOutput);
         if (!string.IsNullOrWhiteSpace(output.StandardError))

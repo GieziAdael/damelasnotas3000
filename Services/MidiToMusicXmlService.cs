@@ -115,6 +115,9 @@ public class MidiToMusicXmlService
         startInfo.Environment["MIDI_INPUT"] = midiFilePath;
         startInfo.Environment["XML_OUTPUT"] = musicXmlPath;
         startInfo.Environment["TIMING_MAP_OUTPUT"] = timingMapPath;
+        startInfo.Environment.Remove("METER_PHASE_INDEX");
+        startInfo.Environment.Remove("METER_PHASE_DOWNBEAT_SECONDS");
+        startInfo.Environment.Remove("METER_PHASE_SOURCE");
 
         int? meterNumerator =
             meterNumeratorOverride ?? analysis.TimeSignatureNumerator;
@@ -128,6 +131,46 @@ public class MidiToMusicXmlService
                 numerator.ToString(CultureInfo.InvariantCulture);
             startInfo.Environment["METER_DENOMINATOR"] =
                 denominator.ToString(CultureInfo.InvariantCulture);
+
+            // Reutiliza la fase métrica detectada para que el conversor
+            // sitúe los compases según los acentos del audio, no según el
+            // primer ataque que Magenta haya producido.
+            var phaseCandidate = analysis.MeterCandidates?
+                .Where(candidate =>
+                    candidate.Numerator == numerator &&
+                    candidate.Denominator == denominator &&
+                    candidate.PhaseIndex.HasValue)
+                .OrderByDescending(candidate => candidate.Score)
+                .FirstOrDefault();
+            var selectedHypothesis = analysis.TempoHypotheses?
+                .Where(hypothesis =>
+                    hypothesis.Numerator == numerator &&
+                    hypothesis.Denominator == denominator)
+                .OrderByDescending(hypothesis => hypothesis.IsSelected)
+                .ThenByDescending(hypothesis => hypothesis.TotalScore)
+                .FirstOrDefault();
+
+            IReadOnlyList<double>? phaseBeatTimes =
+                string.Equals(
+                    selectedHypothesis?.GridSource,
+                    "madmom",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? analysis.MadmomBeatTimes
+                    : analysis.LibrosaBeatTimes;
+
+            if (phaseCandidate?.PhaseIndex is int phaseIndex &&
+                phaseBeatTimes is { Count: > 0 } &&
+                phaseIndex >= 0 && phaseIndex < phaseBeatTimes.Count)
+            {
+                startInfo.Environment["METER_PHASE_INDEX"] =
+                    phaseIndex.ToString(CultureInfo.InvariantCulture);
+                startInfo.Environment["METER_PHASE_DOWNBEAT_SECONDS"] =
+                    phaseBeatTimes[phaseIndex].ToString(
+                        "0.########",
+                        CultureInfo.InvariantCulture);
+                startInfo.Environment["METER_PHASE_SOURCE"] =
+                    selectedHypothesis?.GridSource ?? "librosa";
+            }
         }
 
         TempoNotation? tempoNotation = TempoNotationResolver.Resolve(
@@ -160,6 +203,13 @@ public class MidiToMusicXmlService
         string stdout = await stdoutTask;
         string stderr = await stderrTask;
 
+        await AnalysisDebugLog.AppendProcessOutputAsync(
+            outputDirectory,
+            "CONVERSIÓN DEL MIDI A MUSICXML",
+            process.ExitCode,
+            stdout,
+            stderr);
+
         Debug.WriteLine(stdout);
         Debug.WriteLine(stderr);
 
@@ -173,9 +223,18 @@ public class MidiToMusicXmlService
 
         if (!File.Exists(timingMapPath))
         {
+            await AnalysisDebugLog.AppendFileAsync(
+                outputDirectory,
+                "MAPA DE SINCRONIZACIÓN DE LA PARTITURA (JSON)",
+                timingMapPath);
             throw new InvalidOperationException(
                 "El conversor no generó el mapa de sincronización de la partitura.");
         }
+
+        await AnalysisDebugLog.AppendFileAsync(
+            outputDirectory,
+            "MAPA DE SINCRONIZACIÓN DE LA PARTITURA (JSON)",
+            timingMapPath);
 
         await using FileStream timingMapStream = File.OpenRead(timingMapPath);
         ScoreTimingMap? timingMap = await JsonSerializer.DeserializeAsync<ScoreTimingMap>(

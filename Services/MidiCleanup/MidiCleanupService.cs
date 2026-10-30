@@ -82,6 +82,13 @@ public sealed class MidiCleanupService
 
         ProcessOutput cleanupOutput = await RunProcessAsync(cleanupStartInfo);
 
+        await AnalysisDebugLog.AppendProcessOutputAsync(
+            outputDirectory,
+            "LIMPIEZA MIDI: EVALUACIÓN DE NOTAS CONTRA EL AUDIO",
+            cleanupOutput.ExitCode,
+            cleanupOutput.StandardOutput,
+            cleanupOutput.StandardError);
+
         Debug.WriteLine("Limpieza MIDI:");
         Debug.WriteLine(cleanupOutput.StandardOutput);
         WriteStandardError(cleanupOutput.StandardError);
@@ -205,6 +212,11 @@ public sealed class MidiCleanupService
                 WriteIndented = true
             }));
 
+        await AnalysisDebugLog.AppendFileAsync(
+            outputDirectory,
+            "REPORTE DE LIMPIEZA Y COMPARACIÓN ENTRE TRANSCRIPTORES (JSON)",
+            diagnosticReportPath);
+
         return resultWithPaths;
 #else
         throw new PlatformNotSupportedException(
@@ -320,6 +332,13 @@ public sealed class MidiCleanupService
                 startInfo,
                 TimeSpan.FromMinutes(5));
 
+            await AnalysisDebugLog.AppendProcessOutputAsync(
+                outputDirectory,
+                "COMPARACIÓN MAGENTA / BASIC PITCH",
+                comparisonOutput.ExitCode,
+                comparisonOutput.StandardOutput,
+                comparisonOutput.StandardError);
+
             Debug.WriteLine("Comparación Magenta / Basic Pitch:");
             Debug.WriteLine(comparisonOutput.StandardOutput);
             WriteStandardError(comparisonOutput.StandardError);
@@ -351,6 +370,10 @@ public sealed class MidiCleanupService
         {
             // Basic Pitch es una segunda opinion. Si falta una dependencia o
             // el modelo falla, se conserva el resultado del flujo Magenta.
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "ERROR EN LA COMPARACIÓN MAGENTA / BASIC PITCH",
+                exception.ToString());
             Debug.WriteLine(
                 "Falló la comparación opcional con Basic Pitch: " + exception);
 

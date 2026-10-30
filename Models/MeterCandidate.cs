@@ -10,5 +10,6 @@ namespace Damelasnotas3000.Models
         double Score,
         int? BeatsPerBar = null,
         string? BeatUnit = null,
-        double? BeatUnitQuarterLength = null);
+        double? BeatUnitQuarterLength = null,
+        int? PhaseIndex = null);
 }

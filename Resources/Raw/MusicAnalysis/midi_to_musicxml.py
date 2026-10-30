@@ -32,6 +32,7 @@ ONSET_GROUP_TOLERANCE_QL = 0.06
 # conserva la notación más sencilla que explique los ataques.
 RHYTHMIC_SUBDIVISIONS = (1, 2, 3, 4, 6, 8)
 MAX_INITIAL_ONSET_COMPENSATION_QL = 0.125
+TIE_POSITION_TOLERANCE_QL = 1e-6
 
 
 def weighted_mean(values):
@@ -88,13 +89,13 @@ def estimate_hand_split(records):
 
 
 def extract_pitched_notes(source_score):
-    """Convierte notas y acordes del MIDI en eventos individuales de nota."""
+    """Extrae notas y recompone las que music21 dividió con ligaduras."""
     source_parts = list(source_score.parts)
     if not source_parts:
         source_parts = [source_score]
 
     records = []
-    for source_part in source_parts:
+    for part_index, source_part in enumerate(source_parts):
         flat_part = source_part.flatten()
         for event in flat_part.notes:
             event_offset = float(event.offset)
@@ -113,16 +114,66 @@ def extract_pitched_notes(source_score):
                 velocity = source_note.volume.velocity
                 if velocity is None:
                     velocity = 64
+                tie = getattr(source_note, "tie", None)
+                if tie is None:
+                    tie = getattr(event, "tie", None)
                 records.append({
                     "pitch": int(source_note.pitch.midi),
                     "pitchObject": copy.deepcopy(source_note.pitch),
                     "startQL": event_offset,
                     "durationQL": event_duration,
                     "velocity": int(velocity),
+                    "_tieType": getattr(tie, "type", None),
+                    "_sourcePartIndex": part_index,
                 })
 
-    records.sort(key=lambda item: (item["startQL"], item["pitch"]))
-    return records
+    records.sort(key=lambda item: (
+        item["startQL"],
+        item["pitch"],
+        item["_sourcePartIndex"],
+    ))
+
+    merged_records = []
+    active_ties = {}
+    merged_fragment_count = 0
+
+    for record in records:
+        tie_type = record.pop("_tieType", None)
+        part_index = record.pop("_sourcePartIndex")
+        tie_key = (part_index, record["pitch"])
+        candidates = active_ties.get(tie_key, [])
+        previous = None
+
+        if tie_type in ("continue", "stop"):
+            matching = [
+                candidate
+                for candidate in candidates
+                if abs(
+                    candidate["startQL"] + candidate["durationQL"] -
+                    record["startQL"]
+                ) <= TIE_POSITION_TOLERANCE_QL
+            ]
+            if matching:
+                previous = matching[-1]
+
+        if previous is not None:
+            segment_end = record["startQL"] + record["durationQL"]
+            previous["durationQL"] = segment_end - previous["startQL"]
+            merged_fragment_count += 1
+
+            if tie_type == "stop":
+                active_ties[tie_key] = [
+                    candidate
+                    for candidate in candidates
+                    if candidate is not previous
+                ]
+            continue
+
+        merged_records.append(record)
+        if tie_type in ("start", "continue"):
+            active_ties.setdefault(tie_key, []).append(record)
+
+    return merged_records, len(records), merged_fragment_count
 
 
 def _percentile(values, fraction):
@@ -613,7 +664,11 @@ def normalize_records_to_tempo(records, source_score):
         )
         return 1.0
 
-    target_qpm = bpm / referent_length
+    # TEMPO_BPM expresa cuántas veces su figura de referencia ocurre por
+    # minuto. Para convertirlo a negras por minuto, multiplica por la duración
+    # de esa figura en negras; dividir comprimiría la partitura para valores
+    # como corchea o negra con puntillo.
+    target_qpm = bpm * referent_length
     if source_qpm is None or not math.isfinite(source_qpm) or source_qpm <= 0:
         print("ESCALA TEMPORAL: omitida; no se pudo leer el tempo MIDI")
         return 1.0
@@ -665,6 +720,59 @@ def trim_leading_full_measures(records):
         "y se conservó la posición del ataque dentro del compás",
     )
     return amount
+
+
+def align_records_to_meter_phase(records):
+    """Alinea las barras con el pulso fuerte estimado en el análisis de audio.
+
+    La fase se expresa como el tiempo del primer downbeat de la cuadrícula.
+    Se escoge el downbeat más reciente que no quede después del primer ataque,
+    de modo que una pausa inicial larga no se convierta en varios compases
+    vacíos y que el ataque conserve su pulso dentro del compás.
+    """
+    phase_index = os.environ.get("METER_PHASE_INDEX")
+    downbeat_seconds = os.environ.get("METER_PHASE_DOWNBEAT_SECONDS")
+    numerator = os.environ.get("METER_NUMERATOR")
+    denominator = os.environ.get("METER_DENOMINATOR")
+    bpm = os.environ.get("TEMPO_BPM")
+    tempo_unit = os.environ.get("TEMPO_UNIT")
+
+    if not all((phase_index, downbeat_seconds, numerator, denominator, bpm, tempo_unit)):
+        print("FASE MÉTRICA: no disponible; se conserva el origen MIDI")
+        return 0.0
+
+    try:
+        phase_index_value = int(phase_index)
+        downbeat_ql = float(downbeat_seconds) * float(bpm) * (
+            _unit_quarter_length(tempo_unit) / 60.0
+        )
+        measure_length = int(numerator) * 4.0 / int(denominator)
+    except (TypeError, ValueError, ZeroDivisionError):
+        print("FASE MÉTRICA: configuración no válida; se conserva el origen MIDI")
+        return 0.0
+
+    if (
+        phase_index_value < 0
+        or not math.isfinite(downbeat_ql)
+        or not math.isfinite(measure_length)
+        or measure_length <= 0
+    ):
+        print("FASE MÉTRICA: valores no válidos; se conserva el origen MIDI")
+        return 0.0
+
+    first_onset = min(record["startQL"] for record in records)
+    bar_index = math.floor((first_onset - downbeat_ql) / measure_length)
+    anchor_ql = downbeat_ql + bar_index * measure_length
+
+    for record in records:
+        record["startQL"] -= anchor_ql
+
+    print(
+        "FASE MÉTRICA:",
+        f"fase {phase_index_value}; downbeat de referencia",
+        f"{downbeat_seconds} s; origen de compás {anchor_ql:.6f} negras",
+    )
+    return anchor_ql
 
 
 def _insert_notatable_events(target_part, records):
@@ -863,7 +971,9 @@ def main():
     # Conserva los tiempos originales del transcriptor. music21, de otro modo,
     # aplica su propia cuantización antes de que este script estime la cuadrícula.
     imported_score = converter.parse(MIDI_INPUT, quantizePost=False)
-    records = extract_pitched_notes(imported_score)
+    records, imported_pitch_record_count, merged_tie_fragment_count = (
+        extract_pitched_notes(imported_score)
+    )
     if not records:
         raise ValueError("El MIDI no contiene notas con altura definida.")
 
@@ -871,6 +981,7 @@ def main():
         records,
         imported_score,
     )
+    meter_phase_anchor_ql = align_records_to_meter_phase(records)
     trimmed_quarter_lengths = trim_leading_full_measures(records)
     subdivisions, mean_error, upper_error, onset_origin_correction = (
         quantize_records(records)
@@ -887,6 +998,9 @@ def main():
     score = build_grand_staff(hands)
 
     print("MIDI_INPUT:", MIDI_INPUT)
+    print("NOTAS IMPORTADAS ANTES DE UNIR LIGADURAS:", imported_pitch_record_count)
+    print("FRAGMENTOS LIGADOS UNIDOS:", merged_tie_fragment_count)
+    print("NOTAS TRAS UNIR LIGADURAS:", len(records))
     print("PUNTO DE DIVISIÓN MIDI:", split_point)
     print("CENTROS DE REGISTRO:", round(low_center, 1), round(high_center, 1))
     print(
@@ -921,6 +1035,15 @@ def main():
             json.dump(
                 {
                     "quarterLengthScale": quarter_length_scale,
+                    "meterPhaseAnchorQL": meter_phase_anchor_ql,
+                    "meterPhaseIndex": (
+                        int(os.environ["METER_PHASE_INDEX"])
+                        if os.environ.get("METER_PHASE_INDEX")
+                        else None
+                    ),
+                    "meterPhaseSource": os.environ.get(
+                        "METER_PHASE_SOURCE"
+                    ),
                     "trimmedQuarterLengths": trimmed_quarter_lengths,
                     "quantizationSubdivisions": subdivisions,
                     "onsetOriginCorrectionQL": onset_origin_correction,

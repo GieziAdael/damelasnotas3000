@@ -333,17 +333,9 @@ public partial class MainPage : ContentPage
         StopButton.IsEnabled = false;
         DiscardButton.IsEnabled = false;
 
+        string? debugOutputDirectory = null;
         try
         {
-            await _midiPlaybackService.PauseAsync();
-            _playbackUiTimer.Stop();
-
-            // Lee los ajustes antes de iniciar las tareas de análisis y limpieza.
-            var (meterNumeratorOverride, meterDenominatorOverride) =
-                ReadMeterOverride();
-            double? tempoOverride = ReadTempoOverride();
-            string? tempoUnitOverride = ReadTempoUnitOverride();
-
             string selectedEngine =
                 TranscriptionEnginePicker.SelectedItem?.ToString() ?? "Magenta";
             bool useBasicPitch = selectedEngine == "Basic Pitch";
@@ -355,8 +347,49 @@ public partial class MainPage : ContentPage
                 DateTime.Now.ToString("yyyyMMdd_HHmmss"));
 
             Directory.CreateDirectory(outputDirectory);
+            debugOutputDirectory = outputDirectory;
 
             string audioPath = _audioFilePath;
+            await AnalysisDebugLog.StartAsync(
+                outputDirectory,
+                audioPath,
+                selectedEngine,
+                compareBothEngines);
+
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "VALORES SELECCIONADOS EN LA APLICACIÓN",
+                $"Compás: {MeterOverridePicker.SelectedItem?.ToString() ?? "(sin selección)"}" +
+                $"{Environment.NewLine}Tempo: {TempoOverrideEntry.Text ?? "(vacío)"}" +
+                $"{Environment.NewLine}Unidad de tempo: {TempoUnitPicker.SelectedItem?.ToString() ?? "(sin selección)"}");
+
+            // Lee y registra los ajustes antes de iniciar análisis y limpieza.
+            var (meterNumeratorOverride, meterDenominatorOverride) =
+                ReadMeterOverride();
+            double? tempoOverride = ReadTempoOverride();
+            string? tempoUnitOverride = ReadTempoUnitOverride();
+
+            string meterOverrideText =
+                meterNumeratorOverride is int meterNumerator &&
+                meterDenominatorOverride is int meterDenominator
+                    ? $"{meterNumerator}/{meterDenominator}"
+                    : "no; automático";
+            string tempoOverrideText = tempoOverride is double manualTempo
+                ? manualTempo.ToString("0.###", CultureInfo.InvariantCulture) + " BPM"
+                : "no; automático";
+
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "CONFIGURACIÓN DE LA CONVERSIÓN",
+                $"Compás manual: {meterOverrideText}" +
+                $"{Environment.NewLine}Tempo manual: {tempoOverrideText}" +
+                $"{Environment.NewLine}Unidad de tempo manual: {tempoUnitOverride ?? "automática"}" +
+                $"{Environment.NewLine}Transcriptor principal: {selectedEngine}" +
+                $"{Environment.NewLine}Comparación de motores: {(compareBothEngines ? "activada" : "desactivada")}");
+
+            await _midiPlaybackService.PauseAsync();
+            _playbackUiTimer.Stop();
+
             string? magentaMidiPath = null;
             Exception? magentaError = null;
             string? basicPitchMidiPath = null;
@@ -392,6 +425,10 @@ public partial class MainPage : ContentPage
                     catch (Exception exception)
                     {
                         magentaError = exception;
+                        await AnalysisDebugLog.AppendSectionAsync(
+                            outputDirectory,
+                            "ERROR DE MAGENTA (COMPARACIÓN OPCIONAL)",
+                            exception.ToString());
                         Debug.WriteLine(
                             "No se pudo generar el MIDI de Magenta: " + exception);
                     }
@@ -409,6 +446,10 @@ public partial class MainPage : ContentPage
                     catch (Exception exception)
                     {
                         basicPitchError = exception;
+                        await AnalysisDebugLog.AppendSectionAsync(
+                            outputDirectory,
+                            "ERROR DE BASIC PITCH (COMPARACIÓN OPCIONAL)",
+                            exception.ToString());
                         Debug.WriteLine(
                             "No se pudo generar el MIDI de Basic Pitch: " + exception);
                     }
@@ -435,6 +476,16 @@ public partial class MainPage : ContentPage
                 audioPath,
                 midiPath,
                 outputDirectory);
+
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "RESULTADO ESTRUCTURADO DEL ANÁLISIS DE AUDIO",
+                System.Text.Json.JsonSerializer.Serialize(
+                    analysis,
+                    new System.Text.Json.JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    }));
 
             RecordingStatus.Text =
                 "Evaluando las notas MIDI contra el audio...";
@@ -673,6 +724,11 @@ public partial class MainPage : ContentPage
                     tempoOverride,
                     tempoUnitOverride);
             string musicXmlPath = conversionResult.MusicXmlPath;
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "ARCHIVO MUSICXML GENERADO",
+                $"Ruta: {musicXmlPath}{Environment.NewLine}" +
+                $"Tamaño: {new FileInfo(musicXmlPath).Length} bytes");
             _scoreQuarterLengthScale =
                 conversionResult.TimingMap.QuarterLengthScale;
             _trimmedScoreQuarterLengths =
@@ -705,6 +761,20 @@ public partial class MainPage : ContentPage
             RecordingStatus.Text =
                 $"Transcripción completada.{Environment.NewLine}{analysisSummary}";
 
+            string debugLogPath = AnalysisDebugLog.GetPath(outputDirectory);
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "CONVERSIÓN COMPLETADA",
+                $"MIDI Magenta: {magentaMidiPath ?? "no generado"}{Environment.NewLine}" +
+                $"MIDI Basic Pitch: {basicPitchMidiPath ?? "no generado"}{Environment.NewLine}" +
+                $"MIDI seleccionado: {midiPath}{Environment.NewLine}" +
+                $"MIDI limpio: {cleanedMidiPath}{Environment.NewLine}" +
+                $"Reporte de limpieza: {cleanupResult.ReportPath ?? "no generado"}{Environment.NewLine}" +
+                $"MusicXML: {musicXmlPath}{Environment.NewLine}" +
+                $"Informe de depuración: {debugLogPath}{Environment.NewLine}" +
+                $"{Environment.NewLine}{analysisSummary}{Environment.NewLine}" +
+                $"Fin: {DateTimeOffset.Now:O}");
+
             await DisplayAlertAsync(
                 "Conversión completada",
                 $"MIDI seleccionado:{Environment.NewLine}{midiPath}" +
@@ -713,6 +783,8 @@ public partial class MainPage : ContentPage
                 $"{Environment.NewLine}{Environment.NewLine}" +
                 $"MusicXML:{Environment.NewLine}{musicXmlPath}" +
                 $"{Environment.NewLine}{Environment.NewLine}" +
+                $"Análisis completo:{Environment.NewLine}{debugLogPath}" +
+                $"{Environment.NewLine}{Environment.NewLine}" +
                 analysisSummary,
                 "Aceptar");
         }
@@ -720,9 +792,24 @@ public partial class MainPage : ContentPage
         {
             RecordingStatus.Text = "Error de conversión.";
 
+            if (!string.IsNullOrWhiteSpace(debugOutputDirectory))
+            {
+                await AnalysisDebugLog.AppendSectionAsync(
+                    debugOutputDirectory,
+                    "ERROR DE CONVERSIÓN",
+                    $"{ex}{Environment.NewLine}Fin: {DateTimeOffset.Now:O}");
+            }
+
+            string debugPathMessage =
+                !string.IsNullOrWhiteSpace(debugOutputDirectory)
+                    ? $"{Environment.NewLine}{Environment.NewLine}" +
+                      $"El registro quedó en:{Environment.NewLine}" +
+                      AnalysisDebugLog.GetPath(debugOutputDirectory)
+                    : string.Empty;
+
             await DisplayAlertAsync(
                 "Error",
-                ex.Message,
+                ex.Message + debugPathMessage,
                 "Aceptar");
         }
         finally

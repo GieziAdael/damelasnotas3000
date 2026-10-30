@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Text.Json;
 using Damelasnotas3000.Models;
+using Damelasnotas3000.Services;
 
 namespace Damelasnotas3000.Services.MusicAnalysis;
 
@@ -113,6 +114,13 @@ public class MusicAnalysisService
         string stdout = await stdoutTask;
         string stderr = await stderrTask;
 
+        await AnalysisDebugLog.AppendProcessOutputAsync(
+            outputDirectory,
+            "ANÁLISIS DE AUDIO: LIBROSA, MADMOM, COMPÁS Y PULSOS",
+            process.ExitCode,
+            stdout,
+            stderr);
+
         Debug.WriteLine(stdout);
         Debug.WriteLine(stderr);
 
@@ -153,6 +161,16 @@ public class MusicAnalysisService
             throw new InvalidOperationException(
                 "No se pudo leer el resultado del análisis.");
         }
+
+        await AnalysisDebugLog.AppendSectionAsync(
+            outputDirectory,
+            "ANÁLISIS INTERPRETADO POR LA APLICACIÓN (JSON)",
+            JsonSerializer.Serialize(
+                result,
+                new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                }));
 
         Debug.WriteLine(
             $"Pulsos Librosa: {result.LibrosaBeatTimes?.Count ?? 0}");

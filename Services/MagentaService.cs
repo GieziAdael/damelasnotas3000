@@ -54,6 +54,13 @@ public class MagentaService
             wavPath,
             outputDirectory);
 
+        await AnalysisDebugLog.AppendProcessOutputAsync(
+            outputDirectory,
+            "MAGENTA: TRANSCRIPCIÓN ORIGINAL",
+            originalTranscription.ExitCode,
+            originalTranscription.StandardOutput,
+            originalTranscription.StandardError);
+
         Debug.WriteLine("Transcripción Magenta original:");
         Debug.WriteLine(originalTranscription.StandardOutput);
         WriteStandardError(originalTranscription.StandardError);
@@ -108,6 +115,13 @@ public class MagentaService
                 "--preroll-seconds",
                 prerollSeconds.ToString(CultureInfo.InvariantCulture));
 
+            await AnalysisDebugLog.AppendProcessOutputAsync(
+                outputDirectory,
+                "MAGENTA: ANÁLISIS DE INICIO Y LÍMITES DEL AUDIO",
+                boundaryAnalysis.ExitCode,
+                boundaryAnalysis.StandardOutput,
+                boundaryAnalysis.StandardError);
+
             Debug.WriteLine("Análisis del inicio de la grabación:");
             Debug.WriteLine(boundaryAnalysis.StandardOutput);
             WriteStandardError(boundaryAnalysis.StandardError);
@@ -142,6 +156,13 @@ public class MagentaService
                 modelDirectory,
                 paddedAudioPath,
                 outputDirectory);
+
+            await AnalysisDebugLog.AppendProcessOutputAsync(
+                outputDirectory,
+                "MAGENTA: SEGUNDA TRANSCRIPCIÓN CON PREÁMBULO",
+                paddedTranscription.ExitCode,
+                paddedTranscription.StandardOutput,
+                paddedTranscription.StandardError);
 
             Debug.WriteLine("Segunda pasada Magenta con preámbulo:");
             Debug.WriteLine(paddedTranscription.StandardOutput);
@@ -178,6 +199,13 @@ public class MagentaService
                 "--preroll-seconds",
                 prerollSeconds.ToString(CultureInfo.InvariantCulture));
 
+            await AnalysisDebugLog.AppendProcessOutputAsync(
+                outputDirectory,
+                "MAGENTA: REVISIÓN Y RECUPERACIÓN DE NOTAS INICIALES",
+                mergeOutput.ExitCode,
+                mergeOutput.StandardOutput,
+                mergeOutput.StandardError);
+
             Debug.WriteLine("Revisión de notas del inicio:");
             Debug.WriteLine(mergeOutput.StandardOutput);
             WriteStandardError(mergeOutput.StandardError);
@@ -201,6 +229,10 @@ public class MagentaService
         {
             // El rescate es opcional: cualquier fallo mantiene operativo el
             // flujo de transcripción original.
+            await AnalysisDebugLog.AppendSectionAsync(
+                outputDirectory,
+                "MAGENTA: ERROR EN EL RESCATE DEL INICIO",
+                exception.ToString());
             Debug.WriteLine(
                 "No se pudo ejecutar el rescate del inicio; " +
                 "se conserva el MIDI Magenta original. " + exception);
